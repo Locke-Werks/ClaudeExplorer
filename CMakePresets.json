@@ -1,0 +1,58 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/build/${presetName}/install",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT_DIR}"
+      }
+    },
+    {
+      "name": "msvc",
+      "hidden": true,
+      "inherits": "base",
+      "description": "No generator is named on purpose: naming 'Visual Studio 17 2022' failed on a GitHub runner that had upgraded to VS 2026.",
+      "architecture": { "value": "x64", "strategy": "external" }
+    },
+    {
+      "name": "vs",
+      "inherits": "msvc",
+      "displayName": "Visual Studio, local development"
+    },
+    {
+      "name": "ci",
+      "inherits": "msvc",
+      "displayName": "CI",
+      "cacheVariables": {
+        "CX_WERROR": "ON",
+        "CX_HARDENING": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "msvc",
+      "displayName": "Release",
+      "cacheVariables": {
+        "CX_HARDENING": "ON"
+      }
+    },
+    {
+      "name": "dev",
+      "inherits": "base",
+      "displayName": "Ninja, Debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "vs",      "configurePreset": "vs",      "configuration": "Debug" },
+    { "name": "ci",      "configurePreset": "ci",      "configuration": "RelWithDebInfo" },
+    { "name": "release", "configurePreset": "release", "configuration": "Release" },
+    { "name": "dev",     "configurePreset": "dev" }
+  ]
+}

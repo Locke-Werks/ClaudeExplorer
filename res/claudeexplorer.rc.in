@@ -1,0 +1,44 @@
+// Generated from res/claudeexplorer.rc.in by configure_file. Edit the .in file.
+// Configured twice, once per binary: the version fields all derive from
+// cmake/Version.cmake, and the three name fields are set per target.
+#include <windows.h>
+
+#define IDI_APPICON 1
+
+// Declared first so Explorer picks it as the file icon.
+IDI_APPICON ICON "@CX_ICON_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+    FILEVERSION    @CX_VERSION_RC@
+    PRODUCTVERSION @CX_VERSION_RC@
+    FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+    FILEFLAGS      VS_FF_DEBUG
+#else
+    FILEFLAGS      0x0L
+#endif
+    FILEOS         VOS_NT_WINDOWS32
+    FILETYPE       VFT_APP
+    FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "@CX_COMPANY@"
+            VALUE "FileDescription",  "@CX_RC_DESCRIPTION@"
+            VALUE "FileVersion",      "@CX_VERSION_RC_STR@"
+            VALUE "InternalName",     "@CX_RC_INTERNAL_NAME@"
+            VALUE "LegalCopyright",   "@CX_COPYRIGHT@"
+            VALUE "OriginalFilename", "@CX_RC_ORIGINAL_FILENAME@"
+            VALUE "ProductName",      "@CX_PRODUCT@"
+            VALUE "ProductVersion",   "@CX_VERSION_RC_STR@"
+        END
+    END
+
+    BLOCK "VarFileInfo"
+    BEGIN
+        // US English, Unicode. Must agree with the StringFileInfo block above.
+        VALUE "Translation", 0x409, 1200
+    END
+END

@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  QT_VERSION: 6.8.3
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # install-qt-action exports QT_ROOT_DIR, which the base preset reads into
+      # CMAKE_PREFIX_PATH. Nothing in this repository hardcodes a Qt path.
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Configure
+        run: cmake --preset ci
+
+      - name: Build
+        run: cmake --build --preset ci
+
+      - name: Stage
+        run: ./scripts/stage-payload.ps1 -BuildDir build/ci -Config RelWithDebInfo
+        shell: pwsh
+
+      # The hook is launched on every tool call in every session. If it grew a
+      # Qt import it would load five DLLs to append one line, and the cost would
+      # land on somebody's turn rather than here.
+      - name: Check cxhook links no Qt
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes('stage/cxhook.exe')
+          $text  = [System.Text.Encoding]::ASCII.GetString($bytes)
+
+          # Positive control first. Without it, a read that silently returned
+          # nothing would pass this check by finding no Qt in an empty string.
+          $system = @('KERNEL32', 'SHELL32', 'ole32')
+          $seen   = @($system | Where-Object { $text -match $_ })
+          if ($seen.Count -lt 2) {
+            throw "only $($seen.Count) system imports found; the import check is not reading the binary"
+          }
+
+          $qt = [regex]::Matches($text, 'Qt\d?(Core|Gui|Widgets|Network|Svg)\.dll')
+          if ($qt.Count -gt 0) {
+            throw "cxhook.exe imports Qt: $($qt | ForEach-Object { $_.Value } | Sort-Object -Unique)"
+          }
+          "cxhook.exe imports $($seen -join ', ') and no Qt"
+
+      # Forge stamps the installer from the TOML and cannot see the CMake file,
+      # so the two carry the same number and nothing but this keeps them level.
+      - name: Check the versions agree
+        shell: pwsh
+        run: |
+          $toml = (Select-String -Path installer.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $src  = Get-Content cmake/Version.cmake -Raw
+          $maj  = [regex]::Match($src, 'CX_VERSION_MAJOR (\d+)').Groups[1].Value
+          $min  = [regex]::Match($src, 'CX_VERSION_MINOR (\d+)').Groups[1].Value
+          $pat  = [regex]::Match($src, 'CX_VERSION_PATCH (\d+)').Groups[1].Value
+          $cmake = "$maj.$min.$pat"
+
+          "installer.toml      $toml"
+          "cmake/Version.cmake $cmake"
+          if ($toml -ne $cmake) { throw "installer.toml $toml does not match cmake/Version.cmake $cmake" }
+
+          foreach ($exe in 'stage/ClaudeExplorer.exe', 'stage/cxhook.exe') {
+            $v = (Get-Item $exe).VersionInfo.ProductVersion
+            "$exe  $v"
+            if ($v -notlike "$cmake*") { throw "$exe reports $v, expected $cmake" }
+          }
+
+      - name: Run the hook tests
+        shell: pwsh
+        run: ./scripts/test-hooks.ps1 -Exe build/ci/bin/RelWithDebInfo/cxhook.exe

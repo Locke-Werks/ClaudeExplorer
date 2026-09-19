@@ -1,0 +1,195 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  QT_VERSION: 6.8.3
+
+  # Pin it. A stale pin here is silent rather than loud: an lwforge older than
+  # v0.3.0 packages `as = "user"` and drops it, so the hook that writes into the
+  # user's profile would run elevated and nothing would say so. v0.4.0 is the
+  # first that fails the build on an unknown hook phase.
+  FORGE_VERSION: v0.4.0
+
+jobs:
+  release:
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the version
+        shell: pwsh
+        run: |
+          $tag  = "${{ github.ref_name }}" -replace '^v', ''
+          $toml = (Select-String -Path installer.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $src  = Get-Content cmake/Version.cmake -Raw
+          $maj  = [regex]::Match($src, 'CX_VERSION_MAJOR (\d+)').Groups[1].Value
+          $min  = [regex]::Match($src, 'CX_VERSION_MINOR (\d+)').Groups[1].Value
+          $pat  = [regex]::Match($src, 'CX_VERSION_PATCH (\d+)').Groups[1].Value
+          $cmake = "$maj.$min.$pat"
+
+          "tag $tag / toml $toml / cmake $cmake"
+          if ($tag -ne $toml)  { throw "tag $tag does not match installer.toml $toml" }
+          if ($tag -ne $cmake) { throw "tag $tag does not match cmake/Version.cmake $cmake" }
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Build
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+
+      - name: Stage the payload
+        shell: pwsh
+        run: ./scripts/stage-payload.ps1 -BuildDir build/release -Config Release
+
+      # The signing action takes a folder rather than a filter, and the stage
+      # tree is mostly Qt, which arrives signed by Qt already.
+      - name: Collect our binaries for signing
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/tosign | Out-Null
+          Get-Content build/payload-ours.txt | ForEach-Object {
+            Copy-Item $_ build/tosign/
+            "  $_"
+          }
+
+      # Before forging, not after. Forge hashes payload members into the
+      # container and extracts them verbatim, so an unsigned binary going in
+      # stays unsigned on the installed machine; signing the finished installer
+      # does nothing for them.
+      - name: Sign the payload
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net
+          trusted-signing-account-name: specterpoint
+          certificate-profile-name: specterpoint
+          files-folder: build/tosign
+          files-folder-filter: exe
+          file-digest: SHA256
+          # Certificates are valid for three days. Without the timestamp the
+          # signature stops validating within the week. Not optional.
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify the payload and copy it back
+        shell: pwsh
+        run: |
+          $origins = @{}
+          Get-Content build/payload-ours.txt | ForEach-Object {
+            $origins[(Split-Path $_ -Leaf)] = $_
+          }
+
+          foreach ($f in Get-ChildItem build/tosign -Filter *.exe) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            "$($f.Name) : $($sig.Status)"
+            if ($sig.Status -ne 'Valid') { throw "$($f.Name) is $($sig.Status)" }
+            if ($null -eq $sig.TimeStamperCertificate) {
+              throw "$($f.Name) has no timestamp; the signature would expire with the certificate"
+            }
+            Copy-Item $f.FullName $origins[$f.Name] -Force
+          }
+
+      # lwstub.exe is already signed in the release, which is what makes the
+      # embedded uninstaller signed without a second pass here. Forge is public,
+      # so the default token is enough: no PAT, no FORGE_TOKEN.
+      - name: Fetch Forge
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:FORGE_VERSION --repo Locke-Werks/Forge `
+            --pattern '*.exe' --dir tools
+          foreach ($name in 'lwforge.exe', 'lwstub.exe') {
+            $sig = Get-AuthenticodeSignature "tools/$name"
+            "$name : $($sig.Status)"
+            if ($sig.Status -ne 'Valid') { throw "tools/$name is $($sig.Status)" }
+          }
+
+      # No --sign here: that flag shells out to scripts/sign.ps1 resolved against
+      # the working directory, which exists only inside the Forge repo.
+      - name: Forge the installer
+        shell: pwsh
+        run: |
+          ./tools/lwforge.exe build `
+            --config installer.toml `
+            --payload stage `
+            --stub tools/lwstub.exe `
+            --out dist/ClaudeExplorer-Setup.exe
+
+      # Last, after resource stamping and the container append have already
+      # rewritten the image.
+      - name: Sign the installer
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net
+          trusted-signing-account-name: specterpoint
+          certificate-profile-name: specterpoint
+          files-folder: dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify the installer
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist/ClaudeExplorer-Setup.exe
+          "installer: $($sig.Status)  $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { throw "installer is $($sig.Status)" }
+
+          # Signing appended a certificate table after the container. This is
+          # what proves it did not orphan the payload, and it is the check
+          # people leave out.
+          ./tools/lwforge.exe inspect dist/ClaudeExplorer-Setup.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "the signed installer cannot read its own container"
+          }
+
+      # Catches a /O: id the installer no longer declares, which would fail an
+      # unattended deployment with 1603 and nothing else to go on.
+      - name: Verify the option surface
+        shell: pwsh
+        run: |
+          $report = & dist/ClaudeExplorer-Setup.exe --check-only /O:claude_hooks=off /O:start_menu=off 2>&1 | Out-String
+          $report
+          if ($report -match 'not declared|does not declare|unknown option') {
+            throw "an option id was rejected"
+          }
+          # A non-zero exit here can also mean a preflight the runner fails, and
+          # a Server runner failing os_build is a property of the runner rather
+          # than a defect in the installer. The text distinguishes them; the
+          # code does not.
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::check-only exited $LASTEXITCODE (likely a runner preflight)"
+          }
+          exit 0
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/ClaudeExplorer-Setup.exe `
+            --repo "${{ github.repository }}" `
+            --title "Claude Explorer ${{ github.ref_name }}" `
+            --notes-file .github/release-notes.md

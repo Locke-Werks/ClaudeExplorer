@@ -1,0 +1,144 @@
+# Forge installer configuration.
+# Schema: Locke-Werks/Forge docs/config-schema.md
+#
+# Paths are single-quoted TOML literal strings. In a basic string '\b' in
+# {InstallDir}\bin is a backspace, and the failure lands somewhere else.
+
+[product]
+name        = "Claude Explorer"
+version     = "1.0.0"
+publisher   = "Locke Werks"
+description = "What your Claude Code sessions are doing, as the shape of the work"
+copyright   = "Copyright (C) 2026 Locke Werks"
+url         = "https://github.com/Locke-Werks/ClaudeExplorer"
+icon        = "assets/claudeexplorer.ico"
+
+# Stable across versions. Keys the upgrade path, so it must never change.
+upgrade_code = "1d6cb69d-ddfc-44d9-922e-91f90fb6b175"
+
+# No version component, or taskbar pins and toasts break on upgrade.
+aumid = "LockeWerks.ClaudeExplorer"
+
+[install]
+scope     = "machine"
+dir       = '{ProgramFiles}\Locke Werks\Claude Explorer'
+elevation = "required"
+
+[ui]
+license_text = """
+Claude Explorer
+
+Copyright (C) 2026 Locke Werks
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see https://www.gnu.org/licenses/.
+
+The Chakra Petch and Outfit typefaces are bundled under the SIL Open Font
+License 1.1.
+
+Source: https://github.com/Locke-Werks/ClaudeExplorer
+"""
+
+[[preflight]]
+type = "os_build"
+min  = 22000
+fail = "Claude Explorer needs Windows 11 or newer."
+
+[[preflight]]
+type            = "process_not_running"
+name            = "ClaudeExplorer.exe"
+restart_manager = true
+fail            = "Close Claude Explorer and run this again."
+
+# cxhook.exe is launched by Claude Code on every tool call and exits in
+# milliseconds, so catching one mid-run is a timing accident rather than a
+# reason to refuse. Recoverable, so the person gets the retry rather than a
+# dead end.
+[[preflight]]
+type            = "process_not_running"
+name            = "cxhook.exe"
+restart_manager = true
+fail            = "A hook is running right now. Retry in a moment."
+
+[[preflight]]
+type  = "free_disk_space"
+bytes = 125829120                     # 120 MB: the Qt runtime is most of it
+fail  = "Not enough free space on the install volume."
+
+[[options]]
+id      = "start_menu"
+label   = "Add a Start Menu shortcut"
+detail  = "Claude Explorer under Locke Werks."
+default = true
+
+[[options]]
+id      = "claude_hooks"
+label   = "Register the Claude Code hooks"
+detail  = "Writes to settings.json in your user profile, so the view can show what each session is doing rather than only what it has spawned. Runs as you, not as the administrator."
+default = true
+
+[[actions]]
+type   = "shortcut"
+target = '{InstallDir}\ClaudeExplorer.exe'
+name   = "Claude Explorer"
+when   = "start_menu"
+
+[[actions]]
+type = "arp"
+
+# ---------------------------------------------------------------- the hooks
+#
+# Four things about the pair below, each of which is the answer to a way of
+# getting this wrong.
+#
+# `run = "payload:cxhook.exe"` executes a payload member, digest-pinned. There
+# is no interpreter and no shell: the signature vouches for the code, so the
+# code has to be something the signature covers. It also means the registration
+# names {InstallDir}\cxhook.exe rather than wherever the build happened to sit,
+# because install() registers whatever path it is running from.
+#
+# `as = "user"` is not optional and is the whole reason this is a hook rather
+# than an action. The file it writes is %USERPROFILE%\.claude\settings.json and
+# this installer elevates, so without it the registration lands in the
+# administrator's profile under over-the-shoulder UAC, and even when the same
+# person elevated, the file comes out owned by BUILTIN\Administrators and Claude
+# Code cannot rewrite it afterwards. Both failures are silent.
+#
+# `post_install` rather than `post_extract`: nothing about the registration
+# needs to happen before the rest of the payload is on disk, and a failure here
+# should find an install that is otherwise complete.
+#
+# Neither is `vital`. A registration that failed costs the view its detail, not
+# the product, and an installer that rolled back over it would be trading a
+# working viewer for none.
+[[hooks.post_install]]
+id     = "claude_hooks"
+run    = "payload:cxhook.exe"
+args   = ["install"]
+as     = "user"
+when   = "claude_hooks"
+sha256 = "auto"
+
+# Out again before the binary they point at is deleted. A stale entry is not
+# harmless: Claude Code runs it on every tool call in every session, and one
+# naming a path that no longer exists pays a failed process launch each time.
+#
+# Gated on the same option the person actually chose at install time, which the
+# install manifest carries, so declining the hooks does not make uninstall go
+# looking for something nobody registered.
+[[hooks.pre_uninstall]]
+id     = "claude_hooks"
+run    = "payload:cxhook.exe"
+args   = ["uninstall"]
+as     = "user"
+when   = "claude_hooks"
+sha256 = "auto"
