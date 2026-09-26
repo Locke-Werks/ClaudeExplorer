@@ -14,6 +14,10 @@
 
 ---
 
+[![Claude Explorer demo](https://img.youtube.com/vi/eFZSu8pUQnI/maxresdefault.jpg)](https://www.youtube.com/watch?v=eFZSu8pUQnI)
+
+*Demo: every Claude Code session on one canvas (1:14)*
+
 You have four Claude Code sessions open. One is running a workflow that spawned
 eleven subagents. One is sitting on a permission prompt you have not noticed.
 One finished twenty minutes ago and you have not gone back to it. One is
