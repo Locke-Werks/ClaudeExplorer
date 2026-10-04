@@ -45,6 +45,7 @@ ExplorerWindow::ExplorerWindow()
     // with sessions already running is within a few milliseconds.
     watch_ = new BoardWatcher(this);
     connect(watch_, &BoardWatcher::boardReady, canvas_, &NodeExplorerPanel::setBoard);
+    connect(watch_, &BoardWatcher::toolCallsLogged, canvas_, &NodeExplorerPanel::addToolCalls);
     watch_->start();
 }
 

@@ -48,6 +48,9 @@ namespace cx::hook {
 //              SubagentStart      empty; agentType carries it
 //              SubagentStop       empty
 //              SessionEnd         reason
+//   text     PreToolUse only: claude::toolText of tool_input, the whole call
+//            on one line, for the tool log. Absent from lines an older
+//            cxhook wrote, where a reader falls back to detail.
 //
 //   agent      agent_id, present on anything a SUBAGENT did
 //   agentType  agent_type: "Explore", "workflow-subagent", a named agent

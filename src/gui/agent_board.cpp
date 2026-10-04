@@ -781,6 +781,7 @@ std::vector<AgentEvent> readEvents(const fs::path& eventLog, std::int64_t sinceM
             e.sessionId = stringField(&doc, "session");
             e.tool      = stringField(&doc, "tool");
             e.detail    = stringField(&doc, "detail");
+            e.text      = stringField(&doc, "text");
             e.agentId   = stringField(&doc, "agent");
             e.agentType = stringField(&doc, "agentType");
             e.toolUseId = stringField(&doc, "toolUse");
@@ -793,6 +794,33 @@ std::vector<AgentEvent> readEvents(const fs::path& eventLog, std::int64_t sinceM
 
             out.push_back(std::move(e));
         }
+    }
+    return out;
+}
+
+std::vector<LoggedCall> takeNewCalls(const std::vector<AgentEvent>& events, std::int64_t& markMs,
+                                     std::set<std::string>& atMark)
+{
+    std::vector<LoggedCall> out;
+    const std::int64_t      from = markMs;
+    for (const AgentEvent& e : events) {
+        if (e.event != "PreToolUse" || e.tsMs < from)
+            continue;
+
+        // tool_use_id when the line has one; a line without one is told apart
+        // by what it says instead.
+        std::string key = e.toolUseId;
+        if (key.empty())
+            key = e.sessionId + '\x1f' + e.tool + '\x1f' + (e.text.empty() ? e.detail : e.text);
+        if (e.tsMs == from && atMark.contains(key))
+            continue;
+
+        if (e.tsMs > markMs) {
+            markMs = e.tsMs;
+            atMark.clear();
+        }
+        atMark.insert(std::move(key));
+        out.push_back({e.tsMs, e.tool, e.text.empty() ? e.detail : e.text});
     }
     return out;
 }

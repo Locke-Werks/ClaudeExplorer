@@ -146,6 +146,18 @@ constexpr qreal kTaskMarkPx     = 11.0;  // column the x / > sits in
 constexpr qreal kTaskIndentPx   = 9.0;   // per nesting level
 constexpr int   kTaskDoneAlpha  = 105;   // finished rows step back
 
+// The tool log, top left. A line holds at full strength, then fades and goes.
+// Decoration rather than a record: a line longer than the canvas runs off the
+// edge, and nothing is kept once it fades.
+constexpr qint64 kLogHoldMs   = 8000;
+constexpr qint64 kLogFadeMs   = 4000;
+constexpr qint64 kLogFadeInMs = 160;
+constexpr qreal  kLogGlideMs  = 50.0;   // time constant of the push-down
+constexpr size_t kLogMaxLines = 40;
+constexpr int    kLogTimerMs  = 33;
+// Under the graph's own text: these are glanced at, not read.
+constexpr qreal kLogAlpha = 0.6;
+
 QColor withAlpha(QColor c, qreal a)
 {
     // setAlpha(int) rather than setAlphaF: the F-suffixed QColor setters take a
@@ -173,6 +185,56 @@ NodeExplorerPanel::NodeExplorerPanel(QWidget* parent) : QWidget(parent)
     // the whole machine, and the accumulator absorbs the jitter anyway.
     tick_->setTimerType(Qt::CoarseTimer);
     connect(tick_, &QTimer::timeout, this, &NodeExplorerPanel::onTick);
+
+    logTick_ = new QTimer(this);
+    logTick_->setInterval(kLogTimerMs);
+    logTick_->setTimerType(Qt::CoarseTimer);
+    connect(logTick_, &QTimer::timeout, this, &NodeExplorerPanel::onLogTick);
+    logClock_.start();
+}
+
+void NodeExplorerPanel::addToolCalls(const std::vector<LoggedCall>& calls)
+{
+    if (!isVisible())
+        return;
+
+    const qint64 now = logClock_.elapsed();
+    for (const LoggedCall& c : calls) {
+        // Every line already up gives a slot to the new one. Its y is left
+        // where it is and glides down to the slot on the next ticks.
+        log_.push_front({QString::fromStdString(c.tool), QString::fromStdString(c.text), now, 0});
+    }
+    while (log_.size() > kLogMaxLines)
+        log_.pop_back();
+
+    if (!logTick_->isActive()) {
+        logLastMs_ = now;
+        logTick_->start();
+    }
+    update();
+}
+
+void NodeExplorerPanel::onLogTick()
+{
+    const qint64 now = logClock_.elapsed();
+    const qreal  dt  = static_cast<qreal>(now - logLastMs_);
+    logLastMs_       = now;
+
+    while (!log_.empty() && now - log_.back().bornMs >= kLogHoldMs + kLogFadeMs)
+        log_.pop_back();
+
+    const QFontMetricsF fm(theme::mono(11));
+    const qreal         step = fm.height() + 2.0;
+    const qreal         k    = 1.0 - std::exp(-dt / kLogGlideMs);
+    qreal               slot = 0;
+    for (LogLine& l : log_) {
+        l.y += (slot - l.y) * k;
+        slot += step;
+    }
+
+    update();
+    if (log_.empty())
+        logTick_->stop();
 }
 
 void NodeExplorerPanel::setBoard(const AgentList& board)
@@ -335,6 +397,7 @@ void NodeExplorerPanel::paintEvent(QPaintEvent*)
         // are not on the canvas is decoration.
         drawNotice(p, seeded_ ? QStringLiteral("Nothing running.")
                               : QStringLiteral("Reading sessions."));
+        drawToolLog(p);
         return;
     }
 
@@ -370,6 +433,7 @@ void NodeExplorerPanel::paintEvent(QPaintEvent*)
     drawCounts(p);
     if (legend_)
         drawLegend(p);
+    drawToolLog(p);
 }
 
 void NodeExplorerPanel::drawLinks(QPainter& p) const
@@ -770,6 +834,46 @@ void NodeExplorerPanel::drawLegend(QPainter& p) const
     p.setFont(foot);
     p.setPen(theme::c(kFg4));
     p.drawText(QPointF(left, y + step * 0.2), footText);
+}
+
+// Every tool call on the machine as it happens, top left: the newest on top,
+// pushing the rest down, each fading on its own clock.
+void NodeExplorerPanel::drawToolLog(QPainter& p) const
+{
+    if (log_.empty())
+        return;
+
+    const QFont         font = theme::mono(11);
+    const QFontMetricsF fm(font);
+    const qreal         gap  = 8.0;
+    const qint64        now  = logClock_.elapsed();
+    const qreal         maxY = static_cast<qreal>(height()) - kChromePad;
+
+    p.setFont(font);
+    for (const LogLine& l : log_) {
+        const qreal base = kChromePad + fm.ascent() + l.y;
+        if (base > maxY)
+            break;
+
+        const qint64 age = now - l.bornMs;
+        qreal        a   = 1.0;
+        if (age < kLogFadeInMs)
+            a = static_cast<qreal>(age) / static_cast<qreal>(kLogFadeInMs);
+        else if (age > kLogHoldMs) {
+            // Ease in, so a line lingers near full strength before it goes.
+            const qreal t = std::min(1.0, static_cast<qreal>(age - kLogHoldMs)
+                                              / static_cast<qreal>(kLogFadeMs));
+            a = 1.0 - t * t;
+        }
+        a *= kLogAlpha;
+        if (a <= 0.0)
+            continue;
+
+        p.setPen(withAlpha(theme::c(kFg2), a));
+        p.drawText(QPointF(kChromePad, base), l.tool);
+        p.setPen(withAlpha(theme::c(kFg3), a));
+        p.drawText(QPointF(kChromePad + fm.horizontalAdvance(l.tool) + gap, base), l.text);
+    }
 }
 
 } // namespace cx::gui

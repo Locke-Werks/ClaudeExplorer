@@ -16,6 +16,13 @@ namespace claude {
 // still say something useful.
 std::string toolSummary(const std::string& name, const json::Value* input);
 
+// The whole of what a tool call was given, as one line: the command, the path,
+// the pattern, the URL or the query, uncut, with line breaks and tabs turned
+// into spaces. Anything without a case of its own, every MCP tool included, is
+// its compact JSON input. Only `max` cuts it, a bound against a pathological
+// input rather than a length anyone is meant to read to.
+std::string toolText(const std::string& name, const json::Value* input, std::size_t max = 2000);
+
 // First line only, cut to `max`, with " ..." marking what was dropped.
 //
 // The cut backs off to a UTF-8 lead byte. A prompt is typed by a person and can

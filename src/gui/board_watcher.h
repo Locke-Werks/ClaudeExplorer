@@ -4,7 +4,11 @@
 
 #include <QObject>
 
+#include <cstdint>
+#include <set>
+#include <string>
 #include <thread>
+#include <vector>
 
 // Reads what is running, off the GUI thread, and hands the result over.
 //
@@ -39,6 +43,10 @@ signals:
     // the thread boundary as a copied queued argument.
     void boardReady(const cx::gui::AgentList& board);
 
+    // Tool calls the hook logged since the last emission, oldest first. Only
+    // calls made after the watcher started.
+    void toolCallsLogged(const std::vector<cx::gui::LoggedCall>& calls);
+
 private:
     void run();
     void buildAndPost();
@@ -54,6 +62,10 @@ private:
     // them, and there is exactly one worker.
     SessionFileReader sessions_;
     TaskReader        tasks_;
+
+    // takeNewCalls' cursor. Starts at the worker's start time.
+    std::int64_t          loggedUpToMs_ = 0;
+    std::set<std::string> loggedAtMark_;
 };
 
 } // namespace cx::gui

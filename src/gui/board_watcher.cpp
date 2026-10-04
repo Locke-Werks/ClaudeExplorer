@@ -187,6 +187,10 @@ void BoardWatcher::run()
             w->rearm();
     };
 
+    // The tool log shows calls made from here on. The log's history is not news.
+    loggedUpToMs_ = QDateTime::currentMSecsSinceEpoch();
+    loggedAtMark_.clear();
+
     buildAndPost();
 
     bool stop = false;
@@ -266,6 +270,13 @@ void BoardWatcher::buildAndPost()
     QMetaObject::invokeMethod(
         this, [this, board = std::move(board)] { emit boardReady(board); },
         Qt::QueuedConnection);
+
+    std::vector<LoggedCall> calls = takeNewCalls(events, loggedUpToMs_, loggedAtMark_);
+    if (!calls.empty()) {
+        QMetaObject::invokeMethod(
+            this, [this, calls = std::move(calls)] { emit toolCallsLogged(calls); },
+            Qt::QueuedConnection);
+    }
 }
 
 } // namespace cx::gui

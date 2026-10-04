@@ -7,6 +7,9 @@
 #include <QString>
 #include <QWidget>
 
+#include <deque>
+#include <vector>
+
 class QHideEvent;
 class QPaintEvent;
 class QResizeEvent;
@@ -44,6 +47,11 @@ public:
     bool legendVisible() const { return legend_; }
     void setLegendVisible(bool on);
 
+    // Tool calls the hook just logged, oldest first, for the list in the top
+    // left. Dropped rather than queued while the canvas is hidden, so showing
+    // it again does not replay a backlog.
+    void addToolCalls(const std::vector<LoggedCall>& calls);
+
 signals:
     // "3 sessions  2 runs  5 agents", for the window title.
     void countsChanged(QString summary);
@@ -74,6 +82,17 @@ private:
     // windowed and fullscreen are the same picture.
     void drawCounts(QPainter& p) const;
     void drawLegend(QPainter& p) const;
+    void drawToolLog(QPainter& p) const;
+    void onLogTick();
+
+    // One line of the tool log. `y` glides toward the line's slot, which is
+    // what pushes the older lines down when a new one lands on top.
+    struct LogLine {
+        QString tool;
+        QString text;
+        qint64  bornMs = 0;   // on logClock_
+        qreal   y      = 0;
+    };
 
     NodeGraph graph_;
     Camera    camera_;
@@ -89,6 +108,14 @@ private:
     bool legend_     = true;
 
     QString counts_;
+
+    // Newest first. Its own timer rather than the graph's frame loop: a fading
+    // line must not keep the physics awake, and a settled graph must not stop
+    // a line mid-fade.
+    std::deque<LogLine> log_;
+    QTimer*             logTick_ = nullptr;
+    QElapsedTimer       logClock_;
+    qint64              logLastMs_ = 0;
 };
 
 } // namespace cx::gui

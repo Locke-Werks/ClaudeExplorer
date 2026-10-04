@@ -429,7 +429,7 @@ int receiveBody()
     // Stop carries nothing of its own: the card keeps whatever came before it.
 
     std::vector<std::pair<std::string, json::Value>> record;
-    record.reserve(9);
+    record.reserve(10);
     record.emplace_back("ts", json::makeInt(nowUnixMs()));
     record.emplace_back("event", json::makeString(event));
 
@@ -445,6 +445,14 @@ int receiveBody()
         record.emplace_back("tool", json::makeString(tool));
     if (!detail.empty())
         record.emplace_back("detail", json::makeString(detail));
+
+    // The uncut call, for the tool log. detail stays cut to 120: a node's label
+    // reads it, and an older reader of this log knows nothing else.
+    if (preTool) {
+        const std::string text = claude::toolText(tool, payload.find("tool_input"));
+        if (!text.empty())
+            record.emplace_back("text", json::makeString(text));
+    }
 
     // Absent on everything the session did itself, which is most lines, so this
     // costs the log nothing until subagents are actually running.
