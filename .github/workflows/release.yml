@@ -11,7 +11,7 @@ env:
   # v0.3.0 packages `as = "user"` and drops it, so the hook that writes into the
   # user's profile would run elevated and nothing would say so. v0.4.0 is the
   # first that fails the build on an unknown hook phase.
-  FORGE_VERSION: v0.4.0
+  FORGE_VERSION: v0.4.1
 
 jobs:
   release:

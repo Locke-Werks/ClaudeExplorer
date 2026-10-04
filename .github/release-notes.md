@@ -7,23 +7,18 @@ the task list, the plan. The graph settles under repulsion and link tension, the
 camera fits itself to whatever is on the canvas, and work pops in and out as it
 starts and ends.
 
-New in 1.0.0:
+New in 1.1.0:
 
-The first release. Extracted from ProjectMan's Node Explorer tab and shipped on
-its own, with no projects root to configure and nothing to set up.
+A tool log in the top-left corner. Every tool call any session makes appears as
+one line, the tool and its whole argument, newest on top, and fades out after a
+few seconds. The hook now records the full call for it rather than only the
+120-character summary.
 
-An on-screen key, drawn with the same primitives the canvas uses rather than
-described in words. `K` hides it once you no longer need it and the answer is
-remembered.
+A session that started with no background shells now shows them once it has
+some. Before, a session that was quiet on the first read never showed a shell
+for as long as the window stayed open.
 
-Fullscreen on `F11`, `Esc` to leave it. The window opens maximized, and the
-counts and the key are painted onto the canvas rather than into a status bar, so
-windowed and fullscreen are the same picture.
-
-The installer registers the nine Claude Code hooks itself, as the logged-in user
-rather than as the administrator, and takes them out again on uninstall. Both
-are idempotent: an install that finds the registration already correct writes
-nothing at all, one that finds it wrong repairs it in place, and neither touches
-a hook that belongs to something else.
+A monitor whose command has exited leaves the canvas straight away instead of
+waiting out its timeout.
 
 Requires Windows 11.

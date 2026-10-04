@@ -6,7 +6,7 @@
 
 [product]
 name        = "Claude Explorer"
-version     = "1.0.0"
+version     = "1.1.0"
 publisher   = "Locke Werks"
 description = "What your Claude Code sessions are doing, as the shape of the work"
 copyright   = "Copyright (C) 2026 Locke Werks"
