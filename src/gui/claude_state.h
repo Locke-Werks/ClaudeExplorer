@@ -119,11 +119,17 @@ struct BackgroundTask {
     // The monitor answer is an upper bound, not an observation: a watch whose
     // source ends early goes on being drawn until its declared timeout runs
     // out. That is bounded by Monitor's own cap of an hour and usually by its
-    // five-minute default, and it is the honest limit of what disk can say.
+    // five-minute default.
+    //
+    // With one exception: when the watched command itself ends, Claude Code
+    // writes "[exited with code N]" as the file's last line (seen on CLI
+    // 2.1.286), and a monitor whose source has exited has nothing left to
+    // watch. Without this a finished watch sat on the canvas for the rest of
+    // its timeout saying, in its own detail line, that it had exited.
     bool live(std::int64_t nowMs) const
     {
         if (kind == TaskKind::Monitor)
-            return expiresAtMs > 0 && nowMs < expiresAtMs;
+            return expiresAtMs > 0 && nowMs < expiresAtMs && !tail.starts_with("[exited with code ");
         return writing;
     }
 };

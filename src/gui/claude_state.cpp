@@ -197,11 +197,22 @@ fs::path planRoot()
 
 const fs::path& TaskReader::directoryFor(const std::string& sessionId, const fs::path& cwd)
 {
-    if (const auto at = dirs_.find(sessionId); at != dirs_.end())
-        return at->second;
-
-    fs::path       found;
     const fs::path root = claudeTempRoot();
+
+    if (const auto at = dirs_.find(sessionId); at != dirs_.end()) {
+        // A session that had no tasks when it was first read gets one later,
+        // so a cached miss is re-derived: a string operation and a stat, never
+        // the scan. Returning the cached miss for good hid every shell of a
+        // session that started quiet, for as long as the window stayed open.
+        if (at->second.empty() && !root.empty() && !cwd.empty()) {
+            const fs::path guess = root / cf::projectSlug(cwd) / sessionId / "tasks";
+            if (isDirectory(guess))
+                at->second = guess;
+        }
+        return at->second;
+    }
+
+    fs::path found;
 
     if (!root.empty()) {
         // The derivation, which is right for every directory on this machine.
@@ -245,10 +256,8 @@ std::vector<BackgroundTask> TaskReader::read(const std::string& sessionId, const
     if (dir.empty())
         return out;
 
-    // A session that had no tasks when it was first read gets one later, so a
-    // cached empty path is re-derived the moment the directory appears. The
-    // derivation is a string operation and a stat; only the scan is expensive,
-    // and this never reaches it.
+    // The directory can go as well as come: nothing promises Claude Code keeps
+    // it for the life of the session.
     std::error_code ec;
     if (!fs::is_directory(dir, ec))
         return out;
