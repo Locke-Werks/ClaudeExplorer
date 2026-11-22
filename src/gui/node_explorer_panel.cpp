@@ -3,6 +3,9 @@
 #include "theme_qt.h"
 
 #include <QFontMetricsF>
+#include <QtMath>
+
+#include <functional>
 #include <QHideEvent>
 #include <QLineF>
 #include <QPaintEvent>
@@ -146,6 +149,15 @@ constexpr qreal kTaskMarkPx     = 11.0;  // column the x / > sits in
 constexpr qreal kTaskIndentPx   = 9.0;   // per nesting level
 constexpr int   kTaskDoneAlpha  = 105;   // finished rows step back
 
+// The terminal pane beside a shell, monitor or subagent.
+constexpr qreal kTermWidthPx    = 320.0;
+constexpr qreal kTermMinWidthPx = 110.0;  // narrower than this is not a terminal
+constexpr qreal kTermPadX       = 6.0;
+constexpr qreal kTermPadY       = 3.0;
+constexpr qreal kTermRowGap     = 1.0;
+constexpr qreal kTermCorner     = 3.0;
+constexpr qreal kTermFillAlpha  = 0.92;  // the links behind it stay faintly visible
+
 // The tool log, top left. A line holds at full strength, then fades and goes.
 // Decoration rather than a record: a line longer than the canvas runs off the
 // edge, and nothing is kept once it fades.
@@ -232,7 +244,13 @@ void NodeExplorerPanel::onLogTick()
         slot += step;
     }
 
-    update();
+    // Only the strip the log occupies. A full-canvas repaint at 30 frames a
+    // second, for as long as any line was fading, was most of what a still
+    // graph cost while agents were busy. The painter clips everything else.
+    qreal bottom = slot;
+    for (const LogLine& l : log_)
+        bottom = std::max(bottom, l.y + step);
+    update(QRect(0, 0, width(), qCeil(bottom + 3.0 * step)));
     if (log_.empty())
         logTick_->stop();
 }
@@ -247,12 +265,147 @@ void NodeExplorerPanel::setBoard(const AgentList& board)
     seeded_ = true;
     publishCounts();
 
+    // Labels and terminal panes change text on nearly every refresh without
+    // anything moving. One repaint shows it; waking the simulation would not.
+    if (watching)
+        update();
+
     if (!changed)
         return;
     if (watching)
         wake();
     else
         warmNeeded_ = true;
+}
+
+void NodeExplorerPanel::setTerminalsVisible(bool on)
+{
+    if (terminals_ == on)
+        return;
+    terminals_ = on;
+    update();
+}
+
+bool NodeExplorerPanel::hasTerminal(const Node& n) const
+{
+    if (!terminals_ || n.term.empty())
+        return false;
+    switch (n.kind) {
+    case NodeKind::Shell:
+    case NodeKind::Monitor:
+        return true;
+    // A crowd too big to label is far too big for twenty panes.
+    case NodeKind::Agent:
+        return !n.labelHidden;
+    default:
+        return false;
+    }
+}
+
+void NodeExplorerPanel::drawTerminal(QPainter& p, const Node& n) const
+{
+    if (!hasTerminal(n) || n.alpha <= 0.01)
+        return;
+
+    const QSizeF  view = QSizeF(size());
+    const QPointF c    = camera_.toScreen(n.pos, view);
+    const qreal   r    = n.radius * n.popScale * camera_.scale();
+    if (r < kLabelMinRadiusPx)
+        return;
+
+    // Built once: QFont construction and metrics are not free, and this runs
+    // for every pane every frame.
+    static const QFont         titleFont = theme::mono(10);
+    static const QFont         bodyFont  = theme::mono(9);
+    static const QFontMetricsF tfm(titleFont);
+    static const QFontMetricsF bfm(bodyFont);
+
+    // Same side rule as every label, so panes radiate out of the cluster.
+    const qreal edge  = n.labelRight ? view.width() - c.x() - r - kLabelGap
+                                     : c.x() - r - kLabelGap;
+    // Whole pixels, so a pane drifting near the edge re-renders once per pixel
+    // of width it loses rather than on every sub-pixel step of the simulation.
+    const qreal width = std::floor(std::min(kTermWidthPx, edge - kLabelPad));
+    if (width < kTermMinWidthPx)
+        return;
+
+    const qreal titleH = std::ceil(tfm.height() + 2.0 * kTermPadY);
+    const qreal rowH   = bfm.height() + kTermRowGap;
+    const qreal bodyH  = rowH * static_cast<qreal>(n.term.size()) - kTermRowGap + 2.0 * kTermPadY;
+    const qreal height = std::ceil(titleH + bodyH);
+
+    const qreal left = n.labelRight ? c.x() + r + kLabelGap : c.x() - r - kLabelGap - width;
+    qreal       top  = c.y() - height * 0.5;
+    top = std::clamp(top, kLabelPad, std::max(kLabelPad, view.height() - kLabelPad - height));
+
+    // Everything the picture depends on. Position and alpha are not in it:
+    // those are applied when the cached picture is drawn.
+    std::size_t h = std::hash<std::string>{}(n.label.toStdString());
+    const auto mix = [&h](std::size_t v) { h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2); };
+    mix(static_cast<std::size_t>(width));
+    mix(static_cast<std::size_t>(n.labelColor.rgba()));
+    for (const OutputLine& line : n.term) {
+        mix(std::hash<std::string>{}(line.text));
+        mix(static_cast<std::size_t>(line.tone));
+    }
+
+    const qreal dpr  = devicePixelRatioF();
+    PaneCache&  slot = panes_[n.key];
+    slot.used        = paneFrame_;
+
+    if (slot.hash != h || slot.pixmap.isNull() || slot.pixmap.devicePixelRatioF() != dpr) {
+        slot.hash = h;
+        QPixmap pm(QSize(qCeil(width * dpr), qCeil(height * dpr)));
+        pm.setDevicePixelRatio(dpr);
+        pm.fill(Qt::transparent);
+
+        QPainter q(&pm);
+        q.setRenderHint(QPainter::Antialiasing, true);
+        q.setRenderHint(QPainter::TextAntialiasing, true);
+
+        const QRectF pane(0.5, 0.5, width - 1.0, height - 1.0);
+        const QRectF title(0.0, 0.0, width, titleH);
+
+        q.setPen(QPen(theme::c(kBorder), 1.0));
+        q.setBrush(withAlpha(theme::c(kBlack), kTermFillAlpha));
+        q.drawRoundedRect(pane, kTermCorner, kTermCorner);
+
+        q.setPen(Qt::NoPen);
+        q.setBrush(withAlpha(theme::c(kElevated), kTermFillAlpha));
+        q.setClipRect(title);
+        q.drawRoundedRect(pane, kTermCorner, kTermCorner);
+        q.setClipping(false);
+
+        const qreal textW = width - 2.0 * kTermPadX;
+        q.setFont(titleFont);
+        q.setPen(n.labelColor);
+        q.drawText(QPointF(kTermPadX, kTermPadY + tfm.ascent()),
+                   tfm.elidedText(n.label, Qt::ElideRight, textW));
+
+        q.setFont(bodyFont);
+        qreal y = titleH + kTermPadY + bfm.ascent();
+        for (const OutputLine& line : n.term) {
+            cx::theme::Rgb ink = kFg2;
+            if (line.tone == OutputLine::Tone::Command)
+                ink = kInfo;
+            else if (line.tone == OutputLine::Tone::Quiet)
+                ink = kFg4;
+            q.setPen(theme::c(ink));
+            q.drawText(QPointF(kTermPadX, y),
+                       bfm.elidedText(QString::fromStdString(line.text), Qt::ElideRight, textW));
+            y += rowH;
+        }
+        q.end();
+        slot.pixmap = std::move(pm);
+    }
+
+    // Pop with the node, so a pane does not hang at full size beside a box that
+    // is still growing or already retracting. Snapped to whole pixels so the
+    // blit is a copy rather than a resample.
+    const qreal oldOpacity = p.opacity();
+    p.setOpacity(oldOpacity * n.alpha);
+    p.drawPixmap(QPointF(std::round(left), std::round(top)), slot.pixmap);
+    p.setOpacity(oldOpacity);
 }
 
 void NodeExplorerPanel::setLegendVisible(bool on)
@@ -420,6 +573,23 @@ void NodeExplorerPanel::paintEvent(QPaintEvent*)
                 drawLabel(p, n);
         }
     }
+    // Terminal panes over the labels: each is opaque, and a neighbour's label
+    // drawn across one would be read as a line of its output.
+    ++paneFrame_;
+    for (const NodeKind kind : kDrawOrder) {
+        for (const Node& n : graph_.nodes()) {
+            if (n.kind == kind)
+                drawTerminal(p, n);
+        }
+    }
+    // Drop pictures for panes that were not drawn this frame: the node went,
+    // or its pane is off. Cheap, and it bounds the cache by what is on screen.
+    for (auto it = panes_.begin(); it != panes_.end();) {
+        if (it->second.used != paneFrame_)
+            it = panes_.erase(it);
+        else
+            ++it;
+    }
     // And the task blocks last: a column of rows takes more of the canvas than
     // any label, and nothing else should be written over it.
     for (const Node& n : graph_.nodes()) {
@@ -536,7 +706,7 @@ void NodeExplorerPanel::drawNode(QPainter& p, const Node& n) const
 
 void NodeExplorerPanel::drawLabel(QPainter& p, const Node& n) const
 {
-    if (n.label.isEmpty() || n.alpha <= 0.01)
+    if (n.label.isEmpty() || n.alpha <= 0.01 || hasTerminal(n))
         return;
 
     const QSizeF  view = QSizeF(size());

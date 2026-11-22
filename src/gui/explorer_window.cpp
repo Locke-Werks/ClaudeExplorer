@@ -20,6 +20,7 @@ constexpr int kDefaultHeight = 820;
 // than in a config file, because one boolean is not worth a file format, a
 // parser, a path and a documented location.
 constexpr const char* kLegendSetting = "legend";
+constexpr const char* kTerminalSetting = "terminals";
 
 } // namespace
 
@@ -37,6 +38,7 @@ ExplorerWindow::ExplorerWindow()
 
     QSettings settings;
     canvas_->setLegendVisible(settings.value(QLatin1String(kLegendSetting), true).toBool());
+    canvas_->setTerminalsVisible(settings.value(QLatin1String(kTerminalSetting), true).toBool());
 
     connect(canvas_, &NodeExplorerPanel::countsChanged, this, &ExplorerWindow::setCounts);
 
@@ -93,6 +95,13 @@ void ExplorerWindow::keyPressEvent(QKeyEvent* e)
         const bool on = !canvas_->legendVisible();
         canvas_->setLegendVisible(on);
         QSettings().setValue(QLatin1String(kLegendSetting), on);
+        return;
+    }
+
+    case Qt::Key_T: {
+        const bool on = !canvas_->terminalsVisible();
+        canvas_->setTerminalsVisible(on);
+        QSettings().setValue(QLatin1String(kTerminalSetting), on);
         return;
     }
 

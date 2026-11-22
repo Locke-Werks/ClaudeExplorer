@@ -147,6 +147,17 @@ struct SubAgent {
     std::string phase;         // the run's phase it belongs to, empty otherwise
     std::string activity;      // its own tool line, from hooks
 
+    // The subagent that spawned this one, empty when the session did. Claude
+    // Code writes every agent of a session into one flat subagents directory
+    // whatever its depth, so this field is the only record of the tree.
+    std::string parentAgentId;
+    int         spawnDepth = 1;
+
+    // The tail of its own transcript, for the terminal pane: what it said, the
+    // tools it called, and the first line of each result. Read per refresh and
+    // only for agents not yet finished; never cached with the meta.
+    std::vector<OutputLine> recent;
+
     AgentState   state          = AgentState::Spawned;
     std::int64_t startedAtMs    = 0;
     std::int64_t lastActivityMs = 0;

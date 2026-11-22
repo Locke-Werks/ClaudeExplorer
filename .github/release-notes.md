@@ -7,18 +7,18 @@ the task list, the plan. The graph settles under repulsion and link tension, the
 camera fits itself to whatever is on the canvas, and work pops in and out as it
 starts and ends.
 
-New in 1.1.0:
+New in 1.2.0:
 
-A tool log in the top-left corner. Every tool call any session makes appears as
-one line, the tool and its whole argument, newest on top, and fades out after a
-few seconds. The hook now records the full call for it rather than only the
-120-character summary.
+Terminal panes. Every shell, monitor and subagent now carries a small terminal
+beside it showing its last few lines: a shell's output, or a subagent's own
+transcript, with what it said, the tools it called in blue and the first line of
+each result dimmed. `T` turns them off and the answer is remembered.
 
-A session that started with no background shells now shows them once it has
-some. Before, a session that was quiet on the first read never showed a shell
-for as long as the window stayed open.
+Subagents spawned by subagents hang off the agent that spawned them, to any
+depth, rather than all sitting on the session.
 
-A monitor whose command has exited leaves the canvas straight away instead of
-waiting out its timeout.
+Much lower CPU while sessions are busy. The board rebuilds at most twice a
+second, transcript tails are read incrementally and cached, panes are rendered
+once and reused, and changing text no longer keeps the layout simulation awake.
 
 Requires Windows 11.

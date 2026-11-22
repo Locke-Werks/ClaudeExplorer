@@ -4,10 +4,14 @@
 #include "node_graph.h"
 
 #include <QElapsedTimer>
+#include <QPixmap>
 #include <QString>
 #include <QWidget>
 
+#include <cstdint>
 #include <deque>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 class QHideEvent;
@@ -47,6 +51,11 @@ public:
     bool legendVisible() const { return legend_; }
     void setLegendVisible(bool on);
 
+    // Whether shells, monitors and subagents draw a terminal pane of their
+    // recent output instead of a one-line label. On by default.
+    bool terminalsVisible() const { return terminals_; }
+    void setTerminalsVisible(bool on);
+
     // Tool calls the hook just logged, oldest first, for the list in the top
     // left. Dropped rather than queued while the canvas is hidden, so showing
     // it again does not replay a backlog.
@@ -78,6 +87,12 @@ private:
     void drawTaskBlock(QPainter& p, const Node& n) const;
     void drawNotice(QPainter& p, const QString& text) const;
 
+    // A miniature terminal beside the node: a title bar carrying the label and
+    // the node's last few lines underneath. Stands in for drawLabel on any node
+    // with lines to show.
+    void drawTerminal(QPainter& p, const Node& n) const;
+    bool hasTerminal(const Node& n) const;
+
     // The overlay. Painted onto the canvas rather than put in a status bar, so
     // windowed and fullscreen are the same picture.
     void drawCounts(QPainter& p) const;
@@ -106,6 +121,18 @@ private:
     bool firstShow_  = true;
     bool warmNeeded_ = false;   // structure moved while nobody was looking
     bool legend_     = true;
+    bool terminals_  = true;
+
+    // Each pane rendered once and blitted every frame after. Eliding eight rows
+    // of text per pane per frame was what the frame budget went on; the text
+    // changes every few seconds and the frame loop runs at sixty.
+    struct PaneCache {
+        std::size_t hash  = 0;
+        QPixmap     pixmap;
+        std::uint64_t used = 0;
+    };
+    mutable std::unordered_map<std::string, PaneCache> panes_;
+    mutable std::uint64_t                              paneFrame_ = 0;
 
     QString counts_;
 

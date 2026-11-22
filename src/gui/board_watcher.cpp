@@ -19,6 +19,11 @@ constexpr DWORD kPollMs = 5000;
 // moment to go quiet and the whole burst costs one rebuild.
 constexpr DWORD kSettleMs = 150;
 
+// The shortest gap between two event-driven rebuilds. Terminal panes want to
+// look live; two updates a second reads as live and costs a fraction of what
+// rebuilding on every hook write did.
+constexpr DWORD kMinRebuildGapMs = 500;
+
 constexpr DWORD kWatchFlags =
     FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;
 
@@ -219,8 +224,18 @@ void BoardWatcher::run()
             consume(again);
         }
 
-        if (!stop)
-            buildAndPost();
+        if (stop)
+            break;
+        buildAndPost();
+
+        // A floor under the rebuild rate. The hook log is appended to on every
+        // tool call of every session, so with a dozen agents busy the settle
+        // above almost never runs out and the board was rebuilt several times a
+        // second, each one re-reading every transcript that had moved. Waiting
+        // on the cancel handle alone keeps shutdown immediate; whatever fires
+        // in the meantime is still pending on its handle when the loop returns.
+        if (WaitForSingleObject(handles[kCancelSlot], kMinRebuildGapMs) == WAIT_OBJECT_0)
+            break;
     }
 }
 

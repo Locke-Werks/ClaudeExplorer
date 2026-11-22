@@ -52,6 +52,34 @@
 // rather than an error, every read shared with its writer, every size capped.
 namespace cx::gui {
 
+// ------------------------------------------------------------ terminal lines
+
+// One row of the miniature terminal drawn beside a shell, a monitor or a
+// subagent. The tone is how the row is inked: a shell's output is all Plain;
+// a subagent's transcript mixes what it said, the tool calls it made, and the
+// first line of what each call returned.
+struct OutputLine {
+    enum class Tone { Plain, Command, Quiet };
+    std::string text;
+    Tone        tone = Tone::Plain;
+};
+
+// How many rows a terminal pane holds. Enough to see a build scroll or an agent
+// think across two tool calls, few enough that twenty panes still fit a screen.
+inline constexpr std::size_t kTermLines = 7;
+
+// Each row is cut to this before it reaches the canvas, which elides it again to
+// whatever width the pane gets.
+inline constexpr std::size_t kTermChars = 200;
+
+// The last `count` non-empty lines of a block of terminal output, oldest first.
+//
+// A carriage return inside a line is a redraw, as a progress bar does it, so
+// only what follows the last one is kept. ANSI escape sequences are removed:
+// they are colour and cursor movement meant for a real terminal, and drawn
+// literally they read as noise.
+std::vector<OutputLine> lastLines(const std::string& text, std::size_t count);
+
 // ------------------------------------------------------------ shells and monitors
 
 // Which tool opened a task. Decided by the hook event that named the task id,
@@ -101,6 +129,10 @@ struct BackgroundTask {
     // The last non-empty line of output, which is what the call is saying right
     // now. Cut to kTailChars; the file itself is never held in full.
     std::string tail;
+
+    // The last kTermLines lines, for the terminal pane. `tail` stays separate
+    // because live() reads it and it is cut to a different budget.
+    std::vector<OutputLine> lines;
 
     // Somebody has the output file open for writing. Exact for a shell, always
     // false for a monitor.
