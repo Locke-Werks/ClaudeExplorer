@@ -96,8 +96,19 @@ Sessions that have finished are not drawn at all.
 | `F11` | fullscreen on and off |
 | `Esc` | leave fullscreen |
 | `K` | show or hide the key |
+| `T` | terminal panes on and off |
+| `N` | notifications on and off |
 
 There is no mouse input of any kind.
+
+## Notifications
+
+When a session stops to wait on you, its disc throws off one red ripple. If the
+window is not in front, the taskbar button flashes and Windows shows a toast
+naming the session; several stopping within two seconds share one toast. The
+tray icon exists only to carry those toasts, and clicking it brings the window
+forward. `N` turns all of it off except the ripple, and the choice is
+remembered.
 
 ## Where the data comes from
 

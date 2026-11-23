@@ -4,9 +4,16 @@
 #include "node_explorer_panel.h"
 
 #include <QEvent>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QSettings>
+#include <QSystemTrayIcon>
+#include <QTimer>
 #include <QVBoxLayout>
+
+#include <utility>
+
+#include <windows.h>
 
 namespace cx::gui {
 namespace {
@@ -21,6 +28,11 @@ constexpr int kDefaultHeight = 820;
 // parser, a path and a documented location.
 constexpr const char* kLegendSetting = "legend";
 constexpr const char* kTerminalSetting = "terminals";
+constexpr const char* kNotifySetting = "notifications";
+
+// Sessions often stop together: a workflow's agents finish in a batch and every
+// parent asks at once. One toast naming the count beats a stack of three.
+constexpr int kDebounceMs = 2000;
 
 } // namespace
 
@@ -42,11 +54,23 @@ ExplorerWindow::ExplorerWindow()
 
     connect(canvas_, &NodeExplorerPanel::countsChanged, this, &ExplorerWindow::setCounts);
 
+    debounce_ = new QTimer(this);
+    debounce_->setSingleShot(true);
+    debounce_->setInterval(kDebounceMs);
+    connect(debounce_, &QTimer::timeout, this, &ExplorerWindow::sendAlert);
+
+    attention_ = new AttentionWatch(this);
+    connect(attention_, &AttentionWatch::startedWaiting, this, &ExplorerWindow::onStartedWaiting);
+    setNotifications(settings.value(QLatin1String(kNotifySetting), true).toBool());
+
     // One emit, one canvas. The watcher is constructed before it is started so
     // the connection is in place when the first board lands, which on a machine
     // with sessions already running is within a few milliseconds.
     watch_ = new BoardWatcher(this);
     connect(watch_, &BoardWatcher::boardReady, canvas_, &NodeExplorerPanel::setBoard);
+    // After the canvas, so a session that is born already waiting has a node
+    // to ripple from by the time the edge arrives.
+    connect(watch_, &BoardWatcher::boardReady, attention_, &AttentionWatch::setBoard);
     connect(watch_, &BoardWatcher::toolCallsLogged, canvas_, &NodeExplorerPanel::addToolCalls);
     watch_->start();
 }
@@ -66,6 +90,82 @@ void ExplorerWindow::setCounts(const QString& summary)
     // question without being looked at.
     setWindowTitle(summary.isEmpty() ? QStringLiteral("Claude Explorer")
                                      : QStringLiteral("Claude Explorer  -  %1").arg(summary));
+}
+
+void ExplorerWindow::onStartedWaiting(const std::vector<AttentionWatch::Waiting>& sessions)
+{
+    // The ripple plays whether or not notifications are on: it is part of the
+    // picture, and someone watching the canvas is exactly who it is for.
+    for (const AttentionWatch::Waiting& w : sessions)
+        canvas_->ripple(w.sessionId);
+
+    if (!notify_)
+        return;
+    for (const AttentionWatch::Waiting& w : sessions) {
+        const QString name = w.name.isEmpty() ? QStringLiteral("A session") : w.name;
+        if (!pending_.contains(name))
+            pending_.append(name);
+    }
+    // Not restarted by later arrivals: a steady trickle of waits must still
+    // produce an alert two seconds after the first, not never.
+    if (!debounce_->isActive())
+        debounce_->start();
+}
+
+void ExplorerWindow::sendAlert()
+{
+    const QStringList names = std::exchange(pending_, {});
+
+    // Checked when the alert fires rather than when the wait began, so someone
+    // who switched to the window inside the debounce is not told what they are
+    // already looking at.
+    if (!notify_ || names.isEmpty() || isActiveWindow())
+        return;
+
+    FLASHWINFO flash{};
+    flash.cbSize  = sizeof(flash);
+    flash.hwnd    = reinterpret_cast<HWND>(winId());
+    flash.dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG;
+    FlashWindowEx(&flash);
+
+    if (tray_) {
+        const QString body = names.size() == 1
+                                 ? names.front()
+                                 : QStringLiteral("%1 sessions waiting").arg(names.size());
+        tray_->showMessage(QStringLiteral("Claude is waiting"), body,
+                           QIcon(QStringLiteral(":/claudeexplorer.ico")));
+    }
+}
+
+void ExplorerWindow::setNotifications(bool on)
+{
+    notify_ = on;
+    if (!on) {
+        pending_.clear();
+        debounce_->stop();
+        delete tray_;
+        tray_ = nullptr;
+        return;
+    }
+    if (tray_ || !QSystemTrayIcon::isSystemTrayAvailable())
+        return;
+
+    tray_ = new QSystemTrayIcon(QIcon(QStringLiteral(":/claudeexplorer.ico")), this);
+    tray_->setToolTip(QStringLiteral("Claude Explorer"));
+    // No menu and no actions: the icon is there to carry toasts, and clicking
+    // either it or a toast does the one thing that makes sense, which is bring
+    // the canvas forward.
+    connect(tray_, &QSystemTrayIcon::activated, this, &ExplorerWindow::raiseWindow);
+    connect(tray_, &QSystemTrayIcon::messageClicked, this, &ExplorerWindow::raiseWindow);
+    tray_->show();
+}
+
+void ExplorerWindow::raiseWindow()
+{
+    if (isMinimized())
+        showNormal();
+    raise();
+    activateWindow();
 }
 
 void ExplorerWindow::toggleFullScreen()
@@ -104,6 +204,13 @@ void ExplorerWindow::keyPressEvent(QKeyEvent* e)
         QSettings().setValue(QLatin1String(kTerminalSetting), on);
         return;
     }
+
+    case Qt::Key_N:
+        setNotifications(!notify_);
+        QSettings().setValue(QLatin1String(kNotifySetting), notify_);
+        canvas_->flash(notify_ ? QStringLiteral("Notifications on")
+                               : QStringLiteral("Notifications off"));
+        return;
 
     default:
         break;
