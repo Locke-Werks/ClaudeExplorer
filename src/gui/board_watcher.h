@@ -1,6 +1,7 @@
 #pragma once
 
 #include "agent_board.h"
+#include "transcript_usage.h"
 
 #include <QObject>
 
@@ -62,6 +63,7 @@ private:
     // them, and there is exactly one worker.
     SessionFileReader sessions_;
     TaskReader        tasks_;
+    TranscriptUsageReader usage_;
 
     // takeNewCalls' cursor. Starts at the worker's start time.
     std::int64_t          loggedUpToMs_ = 0;

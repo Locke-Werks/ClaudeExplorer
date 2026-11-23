@@ -68,6 +68,9 @@ done.** Press `K` if you want the key on screen; it is on by default.
 | `.` box | the tool call in flight this instant |
 | `#` box | the session's task list, drawn as a block beside it |
 | `=` box | the plan document it wrote |
+| arc inside a session's rim | how full its context window is |
+| dim, breathing rim | a session marked running that has gone quiet |
+| dashed outline | a session that finished in the last three minutes |
 
 **A solid rim means something is executing this instant. A broken rim means
 armed or inert.** A monitor between two events is waiting, not working, and a
@@ -87,7 +90,21 @@ would have in a terminal. The dependency edges survive as indentation, so a
 blocked item still sits under the thing blocking it and costs one glyph instead
 of an edge the eye has to trace.
 
-Sessions that have finished are not drawn at all.
+The thin arc just inside a session's rim is how full its context window is,
+read from the last turn's usage in its transcript, against 200k tokens or 1M
+once the session has gone past 200k. It is grey while there is room and turns
+amber past about 80%, where a session is close to compacting.
+
+A session marked running that has produced nothing for ten minutes, no hook
+event, no shell output, no transcript write, is stalled. Its rim drops to the
+caption grey and breathes slowly, and its name carries how long it has been
+silent: `idle 14m`. It is not red. Stalled is something to look at when you get
+to it; red is for a session that cannot continue without you.
+
+A session that finishes leaves a dashed hairline outline where it was, with its
+name, for three minutes, fading to nothing. Its subagents and work go at once.
+The outline weighs less than a live session in the layout and in the camera's
+framing, so it gives way to work that is still running.
 
 ## Keys
 
@@ -101,13 +118,14 @@ There is no mouse input of any kind.
 
 ## Where the data comes from
 
-Claude Explorer writes nothing to Claude Code's own files. It reads seven
+Claude Explorer writes nothing to Claude Code's own files. It reads eight
 sources, and what each one can and cannot say decides what ends up on screen.
 
 | Source | What it owns |
 |---|---|
 | `~/.claude/sessions/<pid>.json` | Claude Code's live registry. The only thing that knows a session exists, and the only thing still true after one is killed without warning |
 | `~/.claude/projects/<slug>/<id>/` | a subagent's type and description, and which workflow run and phase it belongs to |
+| `~/.claude/projects/<slug>/<id>.jsonl` | the transcript. Only its tail is read, and only when it has changed: the context used by the last turn, and when the session last wrote anything |
 | `%TEMP%\claude\<slug>\<id>\tasks\` | one file per background shell and monitor, holding its output as it arrives |
 | `~/.claude/tasks/<id>/` | the task list, with real `blocks` / `blockedBy` edges between items |
 | `~/.claude/jobs/`, `~/.claude/daemon/` | sessions running headless under the background daemon, which never write a registry file |
@@ -129,7 +147,10 @@ The view does not poll on a timer. Two directory watches do the waking, with a
 five second ceiling behind them in case the kernel drops a notification, and a
 150ms debounce so one action costs one rebuild rather than six. Once the graph
 has settled the canvas stops repainting entirely: a still picture costs nothing,
-which matters for a window that lives on a second monitor for days.
+which matters for a window that lives on a second monitor for days. The two
+exceptions are a stalled session breathing and a finished session fading, which
+repaint ten times a second without waking the simulation, and stop when they
+are gone.
 
 ## The hooks
 

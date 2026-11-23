@@ -184,7 +184,41 @@ struct Node {
 
     int           spawnOrdinal = 0;
     std::uint64_t seen         = 0;
+
+    // Sessions only. Marked running, and nothing on disk has moved for it in
+    // kStallMs: no hook event, no shell output, no transcript write. `stall`
+    // eases toward the flag so the rim dims rather than switching.
+    bool    stalled  = false;
+    qreal   stall    = 0.0;
+    QString idleText;            // "idle 14m", drawn under the name while stalled
+
+    // Sessions only: how full the context window is, 0..1. Negative draws no
+    // ring. `context` eases toward `contextTarget`, so a turn that adds 20k
+    // tokens sweeps the arc forward instead of jumping it.
+    qreal context       = -1.0;
+    qreal contextTarget = -1.0;
+
+    // A session whose process has gone, kept as a fading outline for
+    // kGhostMs before it is removed. Timed on the wall clock rather than on
+    // animMs, so the fade carries on correctly while the frame loop sleeps.
+    bool         ghost        = false;
+    std::int64_t ghostSinceMs = 0;
 };
+
+// How long a running session may go without any sign of life before it is
+// drawn as stalled. Long enough that a slow tool call is not one.
+inline constexpr std::int64_t kStallMs = 10 * 60 * 1000;
+
+// How long a finished session lingers as an outline, and how long its move
+// from a live body into that outline takes.
+inline constexpr std::int64_t kGhostMs      = 3 * 60 * 1000;
+inline constexpr std::int64_t kGhostEnterMs = 900;
+
+// 0 while a ghost is still the live body it was, 1 once it is all outline.
+qreal ghostMix(const Node& n, std::int64_t nowMs);
+
+// The outline's own strength, 1 when it is new, falling to 0 at kGhostMs.
+qreal ghostFade(const Node& n, std::int64_t nowMs);
 
 // The view, which nobody drives. It fits whatever the graph is doing, with a
 // margin, and glides rather than snapping.
@@ -239,7 +273,14 @@ public:
 
     void step(qreal dt);          // one fixed substep
     void advance(qreal seconds);  // the animations, on wall time
-    void sweepDead();             // retire whatever finished dying
+    // Retire whatever finished dying, and any ghost whose time is up. True
+    // when something was removed.
+    bool sweepDead();
+
+    // Something on the canvas changes slowly on its own: a stalled session
+    // breathing, or a ghost fading. Neither moves anything, so the panel
+    // repaints for them on a slow timer instead of running the simulation.
+    bool slowAnimating() const;
 
     // Run the layout out in one go, with every node treated as fully arrived.
     // For a tab being opened on work that happened while it was hidden: the

@@ -353,6 +353,12 @@ struct AgentCard {
     std::int64_t  startedAtMs    = 0;
     std::int64_t  lastActivityMs = 0;
     bool          live           = false;   // a registry entry exists
+
+    // Filled by the board watcher from the transcript tail, after the fold:
+    // buildBoard is pure over what it is handed and reads no files itself.
+    std::int64_t contextTokens = 0;
+    std::int64_t contextLimit  = 0;   // zero when the transcript had no usage
+    std::int64_t transcriptMs  = 0;   // the transcript's last write
 };
 
 using AgentList = std::vector<AgentCard>;

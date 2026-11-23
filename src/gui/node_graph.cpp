@@ -400,6 +400,44 @@ qreal easeInBackDown(qreal t)
 
 qreal length(const QPointF& p) { return std::hypot(p.x(), p.y()); }
 
+// What a ghost still weighs in the forces once it is all outline. Enough that
+// a live session does not settle straight through it, little enough that it
+// gives way the moment one wants the room.
+constexpr qreal kGhostInfluence = 0.3;
+
+// How hard a ghost pulls the camera's fit: its box is drawn this far in toward
+// the live box before it is counted, so a fading outline at the edge widens
+// the frame a little rather than holding it open for three minutes.
+constexpr qreal kGhostFrameWeight = 0.5;
+
+// Below this the eased value counts as arrived, which is what lets the frame
+// loop sleep once the dimming or the arc sweep is done.
+constexpr qreal kEaseEpsilon = 0.003;
+
+// The newest thing anything on disk said about this session. The registry's
+// own timestamp is deliberately not the only input: it moves on a status
+// change and not otherwise, so a session that has been busy for an hour reads
+// as busy for an hour whether it is working or wedged.
+std::int64_t lastEvidenceMs(const AgentCard& card)
+{
+    std::int64_t last = std::max(card.lastActivityMs, card.transcriptMs);
+    for (const SubAgent& a : card.agents)
+        last = std::max(last, a.lastActivityMs);
+    for (const BackgroundTask& t : card.tasks)
+        last = std::max(last, t.lastOutputMs);
+    for (const ToolCall& t : card.tools)
+        last = std::max(last, t.tsMs);
+    return last;
+}
+
+QString idleFor(std::int64_t ms)
+{
+    const std::int64_t minutes = ms / 60000;
+    if (minutes < 60)
+        return QStringLiteral("idle %1m").arg(minutes);
+    return QStringLiteral("idle %1h %2m").arg(minutes / 60).arg(minutes % 60, 2, 10, QChar('0'));
+}
+
 // The one place a node's colours are decided, so the canvas and the board read
 // the same state the same way. Status colours stay out of it: the design
 // language keeps red as the only accent and confines the rest to badge chips.
@@ -810,6 +848,29 @@ bool NodeGraph::setBoard(const AgentList& board, bool animate)
             changed |= s.label != label || s.attention != (card.column == AgentColumn::NeedsYou);
             s.label = label;
             paintSession(s, card.column);
+
+            // Back from the dead: the same id reappeared within the linger.
+            if (s.ghost) {
+                s.ghost = false;
+                changed = true;
+            }
+
+            const std::int64_t evidence = lastEvidenceMs(card);
+            const bool stalled = card.column == AgentColumn::Working && evidence > 0
+                              && now - evidence >= kStallMs;
+            changed |= s.stalled != stalled;
+            s.stalled  = stalled;
+            s.idleText = stalled ? idleFor(now - evidence) : QString();
+
+            const qreal context = card.contextLimit > 0
+                                    ? std::clamp(static_cast<qreal>(card.contextTokens)
+                                                     / static_cast<qreal>(card.contextLimit),
+                                                 0.0, 1.0)
+                                    : -1.0;
+            // Half a percent is under a pixel of arc on the largest session;
+            // anything smaller is not worth waking the frame loop for.
+            changed |= std::abs(s.contextTarget - context) > 0.005;
+            s.contextTarget = context;
         }
 
         // Which runs are on the canvas, so an agent knows whether the run it
@@ -1182,8 +1243,23 @@ bool NodeGraph::setBoard(const AgentList& board, bool animate)
     }
 
     for (Node& n : nodes_) {
-        if (n.seen == stamp_ || n.phase == NodePhase::Dying)
+        if (n.seen == stamp_ || n.phase == NodePhase::Dying || n.ghost)
             continue;
+
+        // A finished session lingers as an outline rather than vanishing, so a
+        // glance a minute later can still see that it was there and is done.
+        // Its children are not kept: what it was doing has stopped, and the
+        // outline alone says so.
+        if (n.kind == NodeKind::Session) {
+            n.ghost         = true;
+            n.ghostSinceMs  = animate ? now : now - kGhostEnterMs;
+            n.stalled       = false;
+            n.attention     = false;
+            n.contextTarget = -1.0;
+            changed         = true;
+            continue;
+        }
+
         n.phase  = NodePhase::Dying;
         n.animMs = animate ? 0.0 : kDeathMs;
         changed  = true;
@@ -1390,6 +1466,16 @@ void NodeGraph::advance(qreal seconds)
         n.restAgent += (n.restAgentTarget - n.restAgent) * a;
         n.restWork += (n.restWorkTarget - n.restWork) * a;
 
+        // The stall dims slower than anything else moves: it is news about
+        // the last ten minutes, not about this frame.
+        n.stall += ((n.stalled ? 1.0 : 0.0) - n.stall) * (a * 0.5);
+        if (n.contextTarget < 0.0) {
+            n.context = -1.0;
+        } else {
+            const qreal from = std::max(0.0, n.context);
+            n.context        = from + (n.contextTarget - from) * a;
+        }
+
         n.animMs += ms;
 
         switch (n.phase) {
@@ -1417,7 +1503,9 @@ void NodeGraph::advance(qreal seconds)
         case NodePhase::Alive:
             n.popScale  = 1.0;
             n.alpha     = 1.0;
-            n.influence = 1.0;
+            n.influence = n.ghost
+                            ? 1.0 - (1.0 - kGhostInfluence) * ghostMix(n, nowUnixMs())
+                            : 1.0;
             break;
         case NodePhase::Dying: {
             const qreal t = std::clamp(n.animMs / kDeathMs, 0.0, 1.0);
@@ -1481,19 +1569,51 @@ void NodeGraph::rest()
         n.vel = QPointF();
 }
 
-void NodeGraph::sweepDead()
+bool NodeGraph::sweepDead()
 {
-    const std::size_t was = nodes_.size();
-    std::erase_if(nodes_, [](const Node& n) {
-        return n.phase == NodePhase::Dying && n.animMs >= kDeathMs;
+    const std::size_t  was = nodes_.size();
+    const std::int64_t now = nowUnixMs();
+    std::erase_if(nodes_, [now](const Node& n) {
+        return (n.phase == NodePhase::Dying && n.animMs >= kDeathMs)
+            || (n.ghost && now - n.ghostSinceMs >= kGhostMs);
     });
     if (nodes_.size() == was)
-        return;
+        return false;
 
     index_.clear();
     for (std::size_t i = 0; i < nodes_.size(); ++i)
         index_.emplace(nodes_[i].key, i);
     resolveParents();
+    return true;
+}
+
+bool NodeGraph::slowAnimating() const
+{
+    for (const Node& n : nodes_) {
+        if (n.ghost || n.stall > kEaseEpsilon)
+            return true;
+    }
+    return false;
+}
+
+qreal ghostMix(const Node& n, std::int64_t nowMs)
+{
+    if (!n.ghost)
+        return 0.0;
+    const qreal t = std::clamp(static_cast<qreal>(nowMs - n.ghostSinceMs)
+                                   / static_cast<qreal>(kGhostEnterMs),
+                               0.0, 1.0);
+    return smoothstep(t);
+}
+
+qreal ghostFade(const Node& n, std::int64_t nowMs)
+{
+    if (!n.ghost)
+        return 1.0;
+    const qreal t = std::clamp(static_cast<qreal>(nowMs - n.ghostSinceMs)
+                                   / static_cast<qreal>(kGhostMs),
+                               0.0, 1.0);
+    return 1.0 - smoothstep(t);
 }
 
 bool NodeGraph::settled() const
@@ -1503,6 +1623,15 @@ bool NodeGraph::settled() const
             return false;
         if (length(n.vel) > kSleepSpeed)
             return false;
+        // Eased state still arriving, and a ghost still turning from body
+        // into outline. The ghost's long fade is not in here: the panel paints
+        // that on a slow timer, so the simulation can sleep through it.
+        if (std::abs((n.stalled ? 1.0 : 0.0) - n.stall) > kEaseEpsilon)
+            return false;
+        if (n.contextTarget >= 0.0 && std::abs(n.contextTarget - n.context) > kEaseEpsilon)
+            return false;
+        if (n.ghost && nowUnixMs() - n.ghostSinceMs < kGhostEnterMs)
+            return false;
     }
     return true;
 }
@@ -1511,6 +1640,8 @@ QRectF NodeGraph::bounds() const
 {
     QRectF box;
     for (const Node& n : nodes_) {
+        if (n.ghost)
+            continue;
         // A node on its way out stops claiming space the moment it starts
         // dying, and every other node claims the size it is going to be rather
         // than the size it is this frame. Both are the same guard: the fit
@@ -1524,14 +1655,28 @@ QRectF NodeGraph::bounds() const
             continue;
         box = box.united(QRectF(n.pos.x() - r, n.pos.y() - r, 2.0 * r, 2.0 * r));
     }
-    return box;
+
+    // Ghosts last, and at reduced weight, so the live work decides the frame.
+    // With nothing live left they count in full: the last outline on the
+    // canvas is what there is to look at.
+    const bool    alone  = box.isNull();
+    const QPointF centre = box.center();
+    QRectF        ghosts;
+    for (const Node& n : nodes_) {
+        if (!n.ghost)
+            continue;
+        const qreal   r   = n.radiusTarget;
+        const QPointF pos = alone ? n.pos : n.pos + (centre - n.pos) * kGhostFrameWeight;
+        ghosts = ghosts.united(QRectF(pos.x() - r, pos.y() - r, 2.0 * r, 2.0 * r));
+    }
+    return box.united(ghosts);
 }
 
 int NodeGraph::count(NodeKind kind) const
 {
     int n = 0;
     for (const Node& node : nodes_) {
-        if (node.kind == kind && node.phase != NodePhase::Dying)
+        if (node.kind == kind && node.phase != NodePhase::Dying && !node.ghost)
             ++n;
     }
     return n;

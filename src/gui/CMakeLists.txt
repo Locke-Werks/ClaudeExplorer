@@ -9,6 +9,7 @@ qt_add_executable(ClaudeExplorer WIN32
     agent_board.cpp
     claude_state.cpp
     claude_files.cpp
+    transcript_usage.cpp
     theme_qt.cpp
     resources.qrc
     "${CX_GUI_RC}"

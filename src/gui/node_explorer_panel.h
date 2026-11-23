@@ -100,6 +100,10 @@ private:
     void drawToolLog(QPainter& p) const;
     void onLogTick();
 
+    // The slow repaint for a stalled session breathing or a ghost fading.
+    void onSlowTick();
+    void syncSlow();
+
     // One line of the tool log. `y` glides toward the line's slot, which is
     // what pushes the older lines down when a new one lands on top.
     struct LogLine {
@@ -113,6 +117,7 @@ private:
     Camera    camera_;
 
     QTimer*       tick_ = nullptr;
+    QTimer*       slow_ = nullptr;
     QElapsedTimer clock_;
     qreal         accumulator_ = 0;
     int           quiet_       = 0;   // consecutive settled frames
