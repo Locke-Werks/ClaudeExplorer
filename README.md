@@ -137,6 +137,9 @@ drifts under a label is eased back out of it.
 | `K` | show or hide the key |
 | `T` | terminal panes on and off |
 | `N` | notifications on and off |
+| `[` `]` | step back or forward 30 seconds; held, it speeds up to 10 minutes a step |
+| `P` or `\` | play or pause the replay at 20x; from live, plays the last hour |
+| `L` or `Backspace` | back to live |
 
 There is no mouse input of any kind.
 
@@ -148,6 +151,25 @@ naming the session; several stopping within two seconds share one toast. The
 tray icon exists only to carry those toasts, and clicking it brings the window
 forward. `N` turns all of it off except the ripple, and the choice is
 remembered.
+
+## Replay
+
+The hook log is a timeline, so the last hour can be played back. Press `[` and
+the canvas steps back in time; a hairline bar along the bottom edge shows where
+the playhead sits, the five-minute marks, and how busy each stretch was. The
+live view keeps reading underneath, and `L` puts it straight back.
+
+A replayed board goes through the same graph as a live one, so it looks the
+same. It is rebuilt from the log alone: which sessions were open, what each was
+running, the subagents and their state, the tool call in flight, shells and
+monitors with their commands, and which sessions were waiting on you. Without
+the hooks there is nothing to replay.
+
+Some things leave no history and are left off rather than drawn from the
+present: task lists, plans, workflow progress, terminal output, and the
+background daemon's sessions. A session that went quiet for half an hour
+without the registry still knowing it is taken to be gone, since the log cannot
+tell idle from killed.
 
 ## Where the data comes from
 

@@ -3,6 +3,8 @@
 #include "attention_watch.h"
 
 #include <QStringList>
+#include "agent_board.h"
+
 #include <QWidget>
 
 #include <vector>
@@ -15,6 +17,7 @@ namespace cx::gui {
 
 class BoardWatcher;
 class NodeExplorerPanel;
+class ReplayController;
 
 // The whole product: one canvas, and the thread that feeds it.
 //
@@ -49,7 +52,7 @@ private:
     void raiseWindow();
     void setCounts(const QString& summary);
 
-    BoardWatcher*      watch_ = nullptr;
+    BoardWatcher*      watch_  = nullptr;
     NodeExplorerPanel* canvas_ = nullptr;
     AttentionWatch*    attention_ = nullptr;
 
@@ -59,6 +62,12 @@ private:
     QTimer*          debounce_ = nullptr;
     QStringList            pending_;
     bool                   notify_ = true;
+    ReplayController*  replay_ = nullptr;
+
+    // The watcher's latest board, kept while replay has the canvas so that
+    // returning to live shows the present at once rather than after the next
+    // rebuild.
+    AgentList live_;
 };
 
 } // namespace cx::gui
