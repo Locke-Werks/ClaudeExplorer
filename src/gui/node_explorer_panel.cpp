@@ -1,6 +1,7 @@
 #include "node_explorer_panel.h"
 
 #include "theme_qt.h"
+#include "work_marks.h"
 
 #include <QFontMetricsF>
 #include <QtMath>
@@ -100,6 +101,9 @@ constexpr NodeKind kDrawOrder[] = {
 // canvas of circles.
 constexpr qreal kBoxCorner        = 2.5;
 constexpr qreal kGlyphMinRadiusPx = 6.0;
+// A vector glyph holds its shape smaller than a font does.
+constexpr qreal kToolGlyphMinRadiusPx = 4.5;
+constexpr qreal kRunCountMinRadiusPx  = 9.0;
 
 // The overlay: the counts bottom left, the key bottom right. Both are painted
 // onto the canvas rather than put in a status bar, so windowed and fullscreen
@@ -121,6 +125,14 @@ struct LegendRow {
     Rgb             fill;
     bool            rings = false;   // the NEEDS YOU halo
     bool            arc   = false;   // a run's progress
+    bool            strip = false;   // the tool-family glyphs, in a row
+};
+
+// The strip under the tool-call row. The box's own label names the exact tool,
+// so the key only has to show that the mark changes with the family.
+constexpr ToolGlyph kGlyphStrip[] = {
+    ToolGlyph::Shell, ToolGlyph::Edit,  ToolGlyph::Read, ToolGlyph::Search,
+    ToolGlyph::Web,   ToolGlyph::Agent, ToolGlyph::Mcp,
 };
 
 // Ordered the way the canvas is read: the bodies that think, then the work
@@ -132,6 +144,8 @@ constexpr LegendRow kLegend[] = {
     { "shell",      true,  0.0, '>',  false, 1.2, kFg2,      kElevated },
     { "monitor",    true,  0.0, '~',  true,  1.2, kFg2,      kSurface },
     { "tool call",  true,  0.0, '.',  false, 1.0, kFg3,      kSurface },
+    { "shell edit read find web agent mcp", false, 0.0, '\0', false, 1.0, kFg3, kSurface,
+      false, false, true },
     { "task list",  true,  0.0, '#',  true,  1.0, kFg3,      kSurface },
     { "plan",       true,  0.0, '=',  true,  1.0, kFg3,      kSurface },
     { "needs you",  false, 4.0, '\0', false, 2.0, kRed,      kSurface, true },
@@ -167,6 +181,7 @@ constexpr qint64 kLogFadeInMs = 160;
 constexpr qreal  kLogGlideMs  = 50.0;   // time constant of the push-down
 constexpr size_t kLogMaxLines = 40;
 constexpr int    kLogTimerMs  = 33;
+constexpr int    kRingTimerMs = 33;
 // Under the graph's own text: these are glanced at, not read.
 constexpr qreal kLogAlpha = 0.6;
 
@@ -203,6 +218,39 @@ NodeExplorerPanel::NodeExplorerPanel(QWidget* parent) : QWidget(parent)
     logTick_->setTimerType(Qt::CoarseTimer);
     connect(logTick_, &QTimer::timeout, this, &NodeExplorerPanel::onLogTick);
     logClock_.start();
+
+    ringTick_ = new QTimer(this);
+    ringTick_->setInterval(kRingTimerMs);
+    ringTick_->setTimerType(Qt::CoarseTimer);
+    connect(ringTick_, &QTimer::timeout, this, &NodeExplorerPanel::onRingTick);
+    ringClock_.start();
+}
+
+void NodeExplorerPanel::kickRings()
+{
+    if (!isVisible() || ringTick_->isActive())
+        return;
+    // Asked with no time passed, which changes nothing and only says whether
+    // there is anything to animate.
+    if (!graph_.easeRings(0.0))
+        return;
+    ringLastMs_ = ringClock_.elapsed();
+    ringTick_->start();
+}
+
+void NodeExplorerPanel::onRingTick()
+{
+    const qint64 now = ringClock_.elapsed();
+    const qreal  dt  = std::min(static_cast<qreal>(now - ringLastMs_), kMaxCatchUpMs) / 1000.0;
+    ringLastMs_      = now;
+
+    // While the physics runs it eases the rings and repaints on its own frame;
+    // stepping them here too would ease them twice as fast.
+    const bool going = tick_->isActive() ? graph_.easeRings(0.0) : graph_.easeRings(dt);
+    if (!tick_->isActive())
+        update();
+    if (!going)
+        ringTick_->stop();
 }
 
 void NodeExplorerPanel::addToolCalls(const std::vector<LoggedCall>& calls)
@@ -267,8 +315,10 @@ void NodeExplorerPanel::setBoard(const AgentList& board)
 
     // Labels and terminal panes change text on nearly every refresh without
     // anything moving. One repaint shows it; waking the simulation would not.
-    if (watching)
+    if (watching) {
         update();
+        kickRings();
+    }
 
     if (!changed)
         return;
@@ -517,6 +567,7 @@ void NodeExplorerPanel::showEvent(QShowEvent* e)
 
     warmNeeded_ = false;
     wake();
+    kickRings();
 }
 
 void NodeExplorerPanel::hideEvent(QHideEvent* e)
@@ -524,6 +575,7 @@ void NodeExplorerPanel::hideEvent(QHideEvent* e)
     // Everything stays where it is. Coming back to a graph that re-seeded every
     // time would read as a loading state rather than as a view.
     tick_->stop();
+    ringTick_->stop();
     QWidget::hideEvent(e);
 }
 
@@ -678,7 +730,15 @@ void NodeExplorerPanel::drawNode(QPainter& p, const Node& n) const
         // The glyph is what tells four kinds of box apart, so it is drawn
         // whenever the box is big enough to hold a character at all and
         // dropped, rather than shrunk, below that.
-        if (!n.glyph.isNull() && n.glyph != QChar(' ') && r >= kGlyphMinRadiusPx) {
+        if (n.kind == NodeKind::Tool) {
+            // A vector mark rather than a character, so it can say which tool
+            // family is running and still be legible down at this size.
+            if (r >= kToolGlyphMinRadiusPx) {
+                const qreal  inset = r * 0.42;
+                const QRectF mark  = body.adjusted(inset, inset, -inset, -inset);
+                drawToolGlyph(p, n.toolGlyph, mark, withAlpha(theme::c(kFg2), n.alpha));
+            }
+        } else if (!n.glyph.isNull() && n.glyph != QChar(' ') && r >= kGlyphMinRadiusPx) {
             QFont font = theme::mono(static_cast<int>(std::clamp(r * 1.1, 7.0, 13.0)));
             font.setBold(true);
             p.setFont(font);
@@ -689,6 +749,22 @@ void NodeExplorerPanel::drawNode(QPainter& p, const Node& n) const
     }
 
     p.drawEllipse(c, r, r);
+
+    if (n.kind == NodeKind::Run && n.segTotal > 0) {
+        RingState ring;
+        ring.lanes   = n.segSlots;
+        ring.total   = n.segTotal;
+        ring.done    = n.segShown;
+        ring.doneNow = n.segDone;
+        ring.failed  = n.segFailed;
+        // Just outside the rim rather than on it, so the hollow tracks of
+        // pending segments do not merge with the rim into one thick line.
+        const qreal ringR = r + kProgressWidth * 0.5 + 1.5;
+        drawSegmentedRing(p, c, ringR, kProgressWidth, ring,
+                          static_cast<qreal>(ringClock_.elapsed()) / 1000.0, n.alpha);
+        drawRunCount(p, n, c, r);
+        return;
+    }
 
     if (n.progress < 0.0)
         return;
@@ -704,6 +780,27 @@ void NodeExplorerPanel::drawNode(QPainter& p, const Node& n) const
     p.setPen(QPen(withAlpha(arc, n.alpha), kProgressWidth));
     p.setBrush(Qt::NoBrush);
     p.drawArc(QRectF(c.x() - r, c.y() - r, 2.0 * r, 2.0 * r), 90 * 16, -span);
+}
+
+// "8/11" inside the run's disc. Inside rather than beside it, because the
+// run's name already owns the side and a count reads as part of the ring it
+// sits in. Dropped when the disc is too small to hold it legibly.
+void NodeExplorerPanel::drawRunCount(QPainter& p, const Node& n, const QPointF& c, qreal r) const
+{
+    if (r < kRunCountMinRadiusPx)
+        return;
+
+    QFont font = theme::mono(static_cast<int>(std::clamp(r * 0.55, 8.0, 12.0)));
+    const QString text = QStringLiteral("%1/%2").arg(n.segDone).arg(n.segTotal);
+    const QFontMetricsF fm(font);
+    // Shrunk to fit the disc's inner chord, since "18/24" is wider than "3/5".
+    const qreal room = r * 1.6;
+    if (fm.horizontalAdvance(text) > room) {
+        font.setPixelSize(std::max(7, qFloor(font.pixelSize() * room / fm.horizontalAdvance(text))));
+    }
+    p.setFont(font);
+    p.setPen(withAlpha(theme::c(kFg2), n.alpha));
+    p.drawText(QRectF(c.x() - r, c.y() - r, 2.0 * r, 2.0 * r), Qt::AlignCenter, text);
 }
 
 void NodeExplorerPanel::drawLabel(QPainter& p, const Node& n) const
@@ -933,8 +1030,14 @@ void NodeExplorerPanel::drawLegend(QPainter& p) const
     const QString       footText = QStringLiteral("solid rim runs now, broken waits");
 
     qreal textW = footFm.horizontalAdvance(footText) - cell - gap;
-    for (const LegendRow& r : kLegend)
-        textW = std::max(textW, fm.horizontalAdvance(QString::fromUtf8(r.text)));
+    const QFont         small = theme::body(9);
+    const QFontMetricsF smallFm(small);
+    const qreal         stripCell = 15.0;
+    const qreal         stripW    = stripCell * static_cast<qreal>(std::size(kGlyphStrip));
+    for (const LegendRow& r : kLegend) {
+        textW = std::max(textW, r.strip ? stripW - cell - gap
+                                        : fm.horizontalAdvance(QString::fromUtf8(r.text)));
+    }
 
     // Header, a gap under it, one line per row, and the footer. Counted in
     // whole steps because the block is laid out from its bottom edge upward:
@@ -942,7 +1045,7 @@ void NodeExplorerPanel::drawLegend(QPainter& p) const
     // what it did.
     const qreal rows   = static_cast<qreal>(std::size(kLegend));
     const qreal blockW = cell + gap + textW;
-    const qreal blockH = step * (rows + 2.8);
+    const qreal blockH = step * (rows + 3.3);   // the glyph strip takes 1.5 rows
 
     // Nothing is worth covering the graph with. On a window too small to hold
     // the key beside the work, the work wins and the key is simply not drawn.
@@ -962,6 +1065,27 @@ void NodeExplorerPanel::drawLegend(QPainter& p) const
     for (const LegendRow& r : kLegend) {
         const QPointF centre(left + cell * 0.5, y - fm.ascent() * 0.4);
 
+        if (r.strip) {
+            // Glyphs over their families' short names: one and a half rows for
+            // seven marks, where a row each would double the key.
+            const QStringList names = QString::fromUtf8(r.text).split(QLatin1Char(' '));
+            for (std::size_t i = 0; i < std::size(kGlyphStrip); ++i) {
+                const qreal  x    = left + stripCell * (static_cast<qreal>(i) + 0.5);
+                const QRectF mark(x - 4.0, centre.y() - 4.5, 8.0, 8.0);
+                drawToolGlyph(p, kGlyphStrip[i], mark, theme::c(kFg2));
+                const auto at = static_cast<qsizetype>(i);
+                if (at < names.size()) {
+                    p.setFont(small);
+                    p.setPen(theme::c(kFg4));
+                    const qreal w = smallFm.horizontalAdvance(names[at]);
+                    p.drawText(QPointF(x - w * 0.5, centre.y() + 4.5 + smallFm.ascent()),
+                               names[at]);
+                }
+            }
+            y += step * 1.5;
+            continue;
+        }
+
         p.setPen(QPen(theme::c(r.rim), r.rimWidth,
                       r.dashed ? Qt::DotLine : Qt::SolidLine));
         p.setBrush(theme::c(r.fill));
@@ -969,7 +1093,12 @@ void NodeExplorerPanel::drawLegend(QPainter& p) const
         if (r.box) {
             const qreal h = kLegendBox * 0.5;
             p.drawRect(QRectF(centre.x() - h, centre.y() - h, kLegendBox, kLegendBox));
-            if (r.glyph != '\0') {
+            if (r.glyph == '.') {
+                drawToolGlyph(p, ToolGlyph::Other,
+                              QRectF(centre.x() - h, centre.y() - h, kLegendBox, kLegendBox)
+                                  .adjusted(2.5, 2.5, -2.5, -2.5),
+                              theme::c(kFg2));
+            } else if (r.glyph != '\0') {
                 p.setFont(glyph);
                 p.setPen(theme::c(kFg2));
                 p.drawText(QRectF(centre.x() - h, centre.y() - h, kLegendBox, kLegendBox),
@@ -986,12 +1115,15 @@ void NodeExplorerPanel::drawLegend(QPainter& p) const
                 p.drawEllipse(centre, r.radius + 5.0, r.radius + 5.0);
             }
             // A run carries an arc saying how far through its agents it is.
+            // Drawn by the canvas's own ring with the sweep frozen: three
+            // agents back, one out.
             if (r.arc) {
-                p.setBrush(Qt::NoBrush);
-                p.setPen(QPen(theme::c(kFg1), 1.6));
-                const QRectF box(centre.x() - r.radius - 2.0, centre.y() - r.radius - 2.0,
-                                 (r.radius + 2.0) * 2, (r.radius + 2.0) * 2);
-                p.drawArc(box, 90 * 16, -230 * 16);
+                RingState ring;
+                ring.lanes   = 4.0;
+                ring.total   = 4;
+                ring.done    = 3.0;
+                ring.doneNow = 3;
+                drawSegmentedRing(p, centre, r.radius + 2.6, 1.6, ring, 0.35, 1.0);
             }
         }
 

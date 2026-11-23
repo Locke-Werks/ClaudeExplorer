@@ -152,6 +152,10 @@ constexpr qreal kMaxSpeed = 1400.0;
 // instead of flinging them.
 constexpr qreal kSmoothRate = 2.5;
 
+// The segmented ring on a run: how fast it eases, and how close counts as there.
+constexpr qreal kRingRate = 7.0;
+constexpr qreal kRingSnap = 0.002;
+
 // ----------------------------------------------------------------- the births
 
 // Consecutive children of one parent fan out instead of stacking, which is what
@@ -845,6 +849,14 @@ bool NodeGraph::setBoard(const AgentList& board, bool animate)
             r.progress     = progress;
             r.progressBad  = w.failed > 0;
             r.radiusTarget = grown;
+            changed |= r.segTotal != w.spawned || r.segDone != w.done || r.segFailed != w.failed;
+            r.segTotal  = w.spawned;
+            r.segDone   = w.done;
+            r.segFailed = w.failed;
+            if (!animate) {
+                r.segSlots = static_cast<qreal>(w.spawned);
+                r.segShown = static_cast<qreal>(w.done);
+            }
             r.fill         = theme::c(kSurface);
             r.rim          = theme::c(kBorderHi);
             r.rimWidth     = 1.5;
@@ -1068,7 +1080,10 @@ bool NodeGraph::setBoard(const AgentList& board, bool animate)
                 boxUnder(owner, toolKey(card.sessionId, call.id), NodeKind::Tool,
                          QString::fromStdString(call.tool),
                          QString::fromStdString(call.detail),
-                         [](Node& n) { paintTool(n); });
+                         [&call](Node& n) {
+                             paintTool(n);
+                             n.toolGlyph = toolGlyphFor(call.tool);
+                         });
 
             if (nested)
                 nodes_[ci].restWorkTarget = kRestAgentWork;
@@ -1379,8 +1394,34 @@ void NodeGraph::step(qreal dt)
     }
 }
 
+bool NodeGraph::easeRings(qreal seconds)
+{
+    // Quicker than the radius glide: a segment filling is news, and half a
+    // second is long enough to be seen without making anyone wait for it.
+    const qreal a     = 1.0 - std::exp(-kRingRate * seconds);
+    bool        going = false;
+    for (Node& n : nodes_) {
+        if (n.kind != NodeKind::Run)
+            continue;
+        const qreal lanes = static_cast<qreal>(n.segTotal);
+        const qreal done  = static_cast<qreal>(n.segDone);
+        n.segSlots += (lanes - n.segSlots) * a;
+        n.segShown += (done - n.segShown) * a;
+        if (std::abs(lanes - n.segSlots) < kRingSnap)
+            n.segSlots = lanes;
+        if (std::abs(done - n.segShown) < kRingSnap)
+            n.segShown = done;
+        // A segment with its agent still out animates its sweep, so the ring
+        // wants frames for as long as one exists.
+        going |= n.segSlots != lanes || n.segShown != done || n.segTotal > n.segDone;
+    }
+    return going;
+}
+
 void NodeGraph::advance(qreal seconds)
 {
+    easeRings(seconds);
+
     const qreal ms = seconds * 1000.0;
     const qreal a  = 1.0 - std::exp(-kSmoothRate * seconds);
 

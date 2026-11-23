@@ -61,11 +61,11 @@ done.** Press `K` if you want the key on screen; it is on by default.
 | | |
 |---|---|
 | large disc | a live session |
-| medium disc | a workflow run, with an arc showing how far through its agents it is |
+| medium disc | a workflow run, ringed with one segment per agent it has started and its count, `8/11`, inside |
 | small disc | a subagent |
 | `>` box | a background shell, still writing |
 | `~` box | a Monitor watch, still armed |
-| `.` box | the tool call in flight this instant |
+| `.` box | the tool call in flight this instant, its mark saying which kind |
 | `#` box | the session's task list, drawn as a block beside it |
 | `=` box | the plan document it wrote |
 
@@ -74,6 +74,16 @@ armed or inert.** A monitor between two events is waiting, not working, and a
 plan is a document that was written once. That is the only state those carry,
 which is what lets one glance separate the things that are happening from the
 things that are merely there.
+
+A run's ring fills a segment as each agent comes back, so how far through it is
+reads without counting. A segment whose agent is still out carries a faint
+light travelling along it; a finished agent's disc leaves the canvas but its
+segment stays solid, because the run's journal still counts it.
+
+The tool box's mark is the family, not the tool: a prompt for a shell, a pencil
+for an edit, an eye for a read, a lens for a search, a globe for the web, a
+disc throwing off a smaller one for a subagent, a plug for anything over MCP,
+and the plain dot for the rest. The label beside it names the exact tool.
 
 A session with two hairline rings around it has stopped and is waiting for you.
 It is the only red on the canvas.

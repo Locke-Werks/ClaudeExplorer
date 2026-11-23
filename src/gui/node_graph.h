@@ -1,6 +1,7 @@
 #pragma once
 
 #include "agent_board.h"
+#include "work_marks.h"
 
 #include <QColor>
 #include <QPointF>
@@ -151,6 +152,18 @@ struct Node {
     qreal   rimWidth   = 1.0;
     qreal   progress   = -1.0;   // runs only, 0..1; negative draws no arc
     bool    progressBad = false; // the run has a failed agent in it
+
+    // Runs only: the segmented ring. The counts come from the run's journal,
+    // which still knows about agents whose discs have already left the canvas.
+    // The two eased values chase them on wall time.
+    int   segTotal  = 0;
+    int   segDone   = 0;
+    int   segFailed = 0;
+    qreal segSlots  = 0;
+    qreal segShown  = 0;
+
+    // Tool calls only: which family glyph the box carries.
+    ToolGlyph toolGlyph = ToolGlyph::Other;
     bool    attention   = false; // the session is in NEEDS YOU
     bool    labelRight  = true;  // which side its label sits on
 
@@ -240,6 +253,10 @@ public:
     void step(qreal dt);          // one fixed substep
     void advance(qreal seconds);  // the animations, on wall time
     void sweepDead();             // retire whatever finished dying
+
+    // The run rings alone, for frames drawn while the physics sleeps. True while
+    // any ring still has something to animate.
+    bool easeRings(qreal seconds);
 
     // Run the layout out in one go, with every node treated as fully arrived.
     // For a tab being opened on work that happened while it was hidden: the

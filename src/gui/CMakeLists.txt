@@ -12,6 +12,7 @@ qt_add_executable(ClaudeExplorer WIN32
     claude_state.cpp
     claude_files.cpp
     theme_qt.cpp
+    work_marks.cpp
     resources.qrc
     "${CX_GUI_RC}"
 )
