@@ -123,6 +123,11 @@ name, for three minutes, fading to nothing. Its subagents and work go at once.
 The outline weighs less than a live session in the layout and in the camera's
 framing, so it gives way to work that is still running.
 
+Text is terrain. Labels, task blocks and terminal panes are drawn at a fixed
+size on screen, and the layout keeps every node out from under text that is not
+its own: a new node comes out of its parent on the clearest side, and one that
+drifts under a label is eased back out of it.
+
 ## Keys
 
 | | |

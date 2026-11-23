@@ -532,7 +532,11 @@ void NodeExplorerPanel::setBoard(const AgentList& board)
     publishCounts();
 
     // Labels and terminal panes change text on nearly every refresh without
-    // anything moving. One repaint shows it; waking the simulation would not.
+    // anything moving. One repaint shows it; waking the simulation would not,
+    // unless the new text now covers a node, which is the one case the graph
+    // has to move for.
+    if (measureText() && graph_.textOverlapping())
+        changed = true;
     if (watching) {
         update();
         kickRings();
@@ -575,7 +579,86 @@ void NodeExplorerPanel::setTerminalsVisible(bool on)
     if (terminals_ == on)
         return;
     terminals_ = on;
+    // A pane is far bigger than the label it replaces, so switching them on
+    // can bury a neighbour and the graph has to make room.
+    if (measureText() && isVisible())
+        wake();
     update();
+}
+
+bool NodeExplorerPanel::measureText()
+{
+    // The fonts the painters use. Built once: this runs on every board.
+    static const QFont         labelFont   = theme::mono(10);
+    static const QFont         sessionFont = theme::tracked(11, QFont::DemiBold, 0.14);
+    static const QFont         titleFont   = theme::mono(10);
+    static const QFont         bodyFont    = theme::mono(9);
+    static const QFontMetricsF lfm(labelFont);
+    static const QFontMetricsF sfm(sessionFont);
+    static const QFontMetricsF tfm(titleFont);
+    static const QFontMetricsF bfm(bodyFont);
+
+    // Anything under this many pixels of change is the same box. Labels
+    // change width by a glyph or two on most refreshes and the graph does not
+    // need to hear about it.
+    constexpr qreal kMovedPx = 8.0;
+
+    bool moved = false;
+    const std::vector<Node>& all = graph_.nodes();
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        const Node& n     = all[i];
+        TextPlace   place = TextPlace::None;
+        QSizeF      px;
+
+        if (hasTerminal(n)) {
+            const qreal titleH = std::ceil(tfm.height() + 2.0 * kTermPadY);
+            const qreal rowH   = bfm.height() + kTermRowGap;
+            const qreal bodyH  = rowH * static_cast<qreal>(n.term.size()) - kTermRowGap
+                               + 2.0 * kTermPadY;
+            place = TextPlace::Side;
+            px    = QSizeF(kTermWidthPx, std::ceil(titleH + bodyH));
+        } else if (n.kind == NodeKind::Tasks) {
+            if (!n.taskLines.empty()) {
+                qreal wide = 0.0;
+                for (const TaskLine& line : n.taskLines) {
+                    wide = std::max(wide, kTaskMarkPx + kTaskIndentPx * line.depth
+                                              + lfm.horizontalAdvance(line.text));
+                }
+                const bool  header = n.taskTotal > static_cast<int>(n.taskLines.size());
+                const int   rows   = static_cast<int>(n.taskLines.size()) + (header ? 1 : 0);
+                const qreal step   = lfm.height() + kTaskLineGap;
+                place = TextPlace::Side;
+                px    = QSizeF(std::min(kTaskBlockMaxPx, header ? kTaskBlockMaxPx : wide),
+                               step * rows - kTaskLineGap);
+            }
+        } else if (!n.label.isEmpty() && !(n.kind == NodeKind::Agent && n.labelHidden)) {
+            if (n.kind == NodeKind::Session || n.kind == NodeKind::Run) {
+                const bool          session = n.kind == NodeKind::Session;
+                const QFontMetricsF& fm     = session ? sfm : lfm;
+                const QString       text    = session ? n.label.toUpper() : n.label;
+                const qreal         cap     = session ? kSessionLabelMaxPx : kLabelMaxPx;
+                place = TextPlace::Under;
+                px    = QSizeF(std::min(cap, fm.horizontalAdvance(text)), fm.height());
+            } else {
+                qreal wide = lfm.horizontalAdvance(n.label);
+                qreal tall = lfm.height();
+                if (!n.detail.isEmpty()) {
+                    wide = std::max(wide, lfm.horizontalAdvance(n.detail));
+                    tall += lfm.height() + kDetailGap;
+                }
+                place = TextPlace::Side;
+                px    = QSizeF(std::min(kLabelMaxPx, wide), tall);
+            }
+        }
+
+        if (place != n.textPlace
+            || std::abs(px.width() - n.textPx.width()) > kMovedPx
+            || std::abs(px.height() - n.textPx.height()) > kMovedPx) {
+            moved = true;
+            graph_.setText(i, place, px);
+        }
+    }
+    return moved;
 }
 
 bool NodeExplorerPanel::hasTerminal(const Node& n) const
@@ -758,6 +841,7 @@ void NodeExplorerPanel::wake()
 
 void NodeExplorerPanel::warm()
 {
+    graph_.setTextScale(camera_.scale());
     graph_.settle(kWarmSteps);
     graph_.sweepDead();
     camera_.frame(graph_.bounds(), QSizeF(size()));
@@ -767,6 +851,10 @@ void NodeExplorerPanel::onTick()
 {
     const qreal elapsedMs = std::min(static_cast<qreal>(clock_.restart()), kMaxCatchUpMs);
     const qreal elapsed   = elapsedMs / 1000.0;
+
+    // Text is a fixed size on screen, so how much world it covers follows the
+    // zoom. Last frame's scale is fine: the camera glides.
+    graph_.setTextScale(camera_.scale());
 
     accumulator_ += elapsed;
     int steps = 0;

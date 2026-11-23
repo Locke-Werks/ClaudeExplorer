@@ -5,6 +5,7 @@
 #include <QDateTime>
 
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <unordered_map>
 #include <utility>
@@ -262,6 +263,44 @@ constexpr qreal kFitShrinkHoldMs  = 400.0;
 // Nothing is moving. 0.5 world units per second is a tenth of a pixel a frame
 // at the zoom clamp, which is under the threshold at which anything is visible.
 constexpr qreal kSleepSpeed = 0.5;
+
+// ------------------------------------------------------------ text as terrain
+
+// The panel's gap between a rim and its text, in logical pixels. Duplicated
+// rather than shared because the panel's constant is private to its painter;
+// if the two drift the box is off by a few pixels, which the pad absorbs.
+constexpr qreal kTextGapPx = 7.0;
+
+// Clear space kept around a text box, in logical pixels, so a node that has
+// been pushed out sits beside the text rather than touching its first glyph.
+constexpr qreal kTextPadPx = 5.0;
+
+// The push out from under text. Slightly stiffer than a link spring so text
+// wins a tug of war with a rest length, and ramped in over kTextRamp world
+// units so a node grazing a box feels a nudge rather than a wall. The force is
+// zero at the box edge and grows from there, which is what lets a cleared
+// graph go to sleep: nothing is pushing once nothing is underneath.
+constexpr qreal kTextPush     = 9.0;
+constexpr qreal kTextRamp     = 14.0;
+constexpr qreal kTextMaxForce = 1600.0;
+
+// How deep into foreign text a node has to be before a changed label is worth
+// waking a sleeping graph for. Labels change width on nearly every refresh;
+// one that now grazes a neighbour by a unit is not worth a second of physics.
+constexpr qreal kTextWakeDepth = 3.0;
+
+// A relative change in camera scale smaller than this leaves the text boxes
+// where they were. The camera glides in on an exponential and would otherwise
+// nudge every box by a hair on every frame of the glide.
+constexpr qreal kTextScaleDeadband = 0.02;
+
+// Where a newborn is allowed to come out of its parent: this many directions,
+// tested at three distances around the rest length it will settle at. The
+// middle ring counts double because it is where the node actually ends up.
+constexpr int   kSpawnAngles = 16;
+constexpr qreal kSpawnRings[]       = { 0.75, 1.0, 1.3 };
+constexpr qreal kSpawnRingWeights[] = { 0.5, 1.0, 0.5 };
+constexpr qreal kSpawnBodyPad = 6.0;
 
 // ----------------------------------------------------------------- the labels
 
@@ -796,9 +835,11 @@ std::size_t NodeGraph::touch(const std::string& key, NodeKind kind,
     if (const auto p = index_.find(parentKey); !parentKey.empty() && p != index_.end()) {
         Node&       parent = nodes_[p->second];
         const qreal angle  = kGoldenAngle * static_cast<qreal>(parent.spawnOrdinal++);
-        const qreal rest   = (kind == NodeKind::Run) ? parent.restRun : parent.restAgent;
+        const qreal rest   = (kind == NodeKind::Run) ? parent.restRun
+                           : isWork(kind)            ? parent.restWork
+                                                     : parent.restAgent;
         const qreal off    = kBirthOffsetFraction * std::max(rest, kRestRunAgent);
-        const QPointF dir(std::cos(angle), std::sin(angle));
+        const QPointF dir  = spawnDirection(parent, rest, radiusFor(kind), angle);
 
         n.pos = parent.pos + dir * off;
         n.vel = dir * kBirthSpeed;
@@ -1485,6 +1526,8 @@ void NodeGraph::step(qreal dt)
         n.force -= QPointF(n.pos.x() * k, n.pos.y() * k);
     }
 
+    avoidText();
+
     // Semi-implicit Euler: velocity first, then position from the new velocity.
     // Forward Euler adds energy on a spring and the fix costs nothing.
     for (Node& n : nodes_) {
@@ -1762,6 +1805,192 @@ const Node* NodeGraph::session(const std::string& sessionId) const
         return nullptr;
     const Node& n = nodes_[it->second];
     return n.kind == NodeKind::Session ? &n : nullptr;
+}
+
+void NodeGraph::setText(std::size_t slot, TextPlace place, const QSizeF& px)
+{
+    if (slot >= nodes_.size())
+        return;
+    Node& n     = nodes_[slot];
+    n.textPlace = px.isEmpty() ? TextPlace::None : place;
+    n.textPx    = px;
+}
+
+void NodeGraph::setTextScale(qreal scale)
+{
+    if (scale <= 0.0)
+        return;
+    if (std::abs(scale / textScale_ - 1.0) < kTextScaleDeadband)
+        return;
+    textScale_ = scale;
+}
+
+QRectF NodeGraph::textRect(const Node& n) const
+{
+    if (n.textPlace == TextPlace::None || n.textPx.isEmpty())
+        return {};
+
+    const qreal s   = textScale_;
+    const qreal w   = n.textPx.width() / s;
+    const qreal h   = n.textPx.height() / s;
+    const qreal gap = kTextGapPx / s;
+    const qreal pad = kTextPadPx / s;
+    // The radius it is settling to rather than the popping one, so a box does
+    // not swell and shrink with the birth overshoot and shove its neighbours.
+    const qreal r   = n.radiusTarget;
+
+    QRectF box;
+    if (n.textPlace == TextPlace::Under) {
+        box = QRectF(n.pos.x() - w * 0.5, n.pos.y() + r + gap, w, h);
+    } else {
+        const qreal left = n.labelRight ? n.pos.x() + r + gap : n.pos.x() - r - gap - w;
+        box = QRectF(left, n.pos.y() - h * 0.5, w, h);
+    }
+    return box.adjusted(-pad, -pad, pad, pad);
+}
+
+// Text is drawn in screen space, so the forces above never see it. This is
+// the one force that does: every node inside a text box it does not own is
+// pushed out along the shortest way, and the owner takes the reaction so the
+// pair separates from both ends and nothing translates the graph.
+//
+// Two pairs are exempt. A node's own text obviously, and the parent of the
+// node that owns the text: a pane or label sits on the side away from the
+// parent by construction, so the only time it covers the parent is the frame
+// its side flips, and pushing there would fight the very link it hangs off.
+void NodeGraph::avoidText()
+{
+    struct Box {
+        std::size_t owner;
+        QRectF      rect;
+    };
+    std::vector<Box> boxes;
+    for (std::size_t i = 0; i < nodes_.size(); ++i) {
+        const Node& n = nodes_[i];
+        if (n.phase == NodePhase::Dying || n.influence <= 0.0)
+            continue;
+        const QRectF r = textRect(n);
+        if (!r.isNull())
+            boxes.push_back({i, r});
+    }
+    if (boxes.empty())
+        return;
+
+    for (std::size_t i = 0; i < nodes_.size(); ++i) {
+        Node& n = nodes_[i];
+        if (n.phase == NodePhase::Dying || n.influence <= 0.0)
+            continue;
+        const qreal r = n.radiusTarget;
+
+        for (const Box& b : boxes) {
+            if (b.owner == i)
+                continue;
+            Node& owner = nodes_[b.owner];
+            if (owner.parentSlot == static_cast<int>(i))
+                continue;
+
+            const QRectF e = b.rect.adjusted(-r, -r, r, r);
+            if (!e.contains(n.pos))
+                continue;
+
+            // Shortest way out. The four depths are continuous in position,
+            // so the push fades to nothing exactly at the edge.
+            const qreal dl = n.pos.x() - e.left();
+            const qreal dr = e.right() - n.pos.x();
+            const qreal dt = n.pos.y() - e.top();
+            const qreal db = e.bottom() - n.pos.y();
+
+            qreal   depth = dl;
+            QPointF dir(-1.0, 0.0);
+            if (dr < depth) { depth = dr; dir = QPointF(1.0, 0.0); }
+            if (dt < depth) { depth = dt; dir = QPointF(0.0, -1.0); }
+            if (db < depth) { depth = db; dir = QPointF(0.0, 1.0); }
+
+            const qreal ease = smoothstep(std::min(1.0, depth / kTextRamp));
+            const qreal mag  = std::min(kTextPush * depth * ease, kTextMaxForce)
+                             * n.influence * owner.influence;
+            n.force += dir * mag;
+            owner.force -= dir * mag;
+        }
+    }
+}
+
+QPointF NodeGraph::spawnDirection(const Node& parent, qreal rest, qreal radius,
+                                  qreal preferred) const
+{
+    // Text boxes once, not per candidate.
+    std::vector<QRectF> boxes;
+    for (const Node& n : nodes_) {
+        if (n.phase == NodePhase::Dying)
+            continue;
+        const QRectF r = textRect(n);
+        if (!r.isNull())
+            boxes.push_back(r);
+    }
+
+    const auto crowding = [&](const QPointF& q) {
+        qreal s = 0.0;
+        for (const Node& m : nodes_) {
+            if (m.phase == NodePhase::Dying)
+                continue;
+            const qreal gap = radius + m.radiusTarget + kSpawnBodyPad - length(q - m.pos);
+            if (gap > 0.0)
+                s += gap * gap;
+        }
+        const QRectF body(q.x() - radius, q.y() - radius, 2.0 * radius, 2.0 * radius);
+        for (const QRectF& r : boxes) {
+            const QRectF hit = r.intersected(body);
+            if (!hit.isEmpty())
+                s += hit.width() * hit.height();
+        }
+        return s;
+    };
+
+    // Out from the preferred angle in both directions at once, so on a clear
+    // canvas the golden angle wins every time and nothing changes, and when
+    // two candidates tie the one nearer it wins rather than whichever the loop
+    // happened to reach first.
+    constexpr qreal kTwoPi = 6.28318530717958647692;
+    QPointF best(std::cos(preferred), std::sin(preferred));
+    qreal   bestScore = -1.0;
+    for (int k = 0; k < kSpawnAngles; ++k) {
+        const int   step  = (k + 1) / 2 * ((k % 2) ? 1 : -1);
+        const qreal angle = preferred + kTwoPi * static_cast<qreal>(step) / kSpawnAngles;
+        const QPointF dir(std::cos(angle), std::sin(angle));
+
+        qreal score = 0.0;
+        for (std::size_t ring = 0; ring < std::size(kSpawnRings); ++ring)
+            score += kSpawnRingWeights[ring] * crowding(parent.pos + dir * rest * kSpawnRings[ring]);
+
+        if (bestScore < 0.0 || score < bestScore) {
+            bestScore = score;
+            best      = dir;
+            if (score <= 0.0)
+                break;
+        }
+    }
+    return best;
+}
+
+bool NodeGraph::textOverlapping() const
+{
+    for (std::size_t i = 0; i < nodes_.size(); ++i) {
+        const Node& n = nodes_[i];
+        if (n.phase == NodePhase::Dying)
+            continue;
+        for (std::size_t j = 0; j < nodes_.size(); ++j) {
+            const Node& o = nodes_[j];
+            if (i == j || o.phase == NodePhase::Dying || o.parentSlot == static_cast<int>(i))
+                continue;
+            const QRectF r = textRect(o);
+            if (r.isNull())
+                continue;
+            const qreal  inset = n.radiusTarget - kTextWakeDepth;
+            if (r.adjusted(-inset, -inset, inset, inset).contains(n.pos))
+                return true;
+        }
+    }
+    return false;
 }
 
 int NodeGraph::count(NodeKind kind) const
