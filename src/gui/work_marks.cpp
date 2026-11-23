@@ -217,8 +217,13 @@ void drawSegmentedRing(QPainter& p, const QPointF& centre, qreal radius, qreal w
         }
 
         if (fill > 0.0) {
-            QPen solid(i < s.failed ? failed : done, width);
+            const bool isFailed = i < s.failed;
+            QPen solid(isFailed ? failed : done, width);
             solid.setCapStyle(Qt::FlatCap);
+            // Dashed so a failure reads as broken work and never as the solid
+            // red of a session waiting on you.
+            if (isFailed)
+                solid.setDashPattern({ 1.6, 1.4 });
             p.setPen(solid);
             arcCw(p, rect, from, span * fill);
         }

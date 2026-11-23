@@ -61,7 +61,7 @@ done.** Press `K` if you want the key on screen; it is on by default.
 | | |
 |---|---|
 | large disc | a live session |
-| medium disc | a workflow run, ringed with one segment per agent it has started and its count, `8/11`, inside |
+| medium disc | a workflow run, ringed with one segment per agent it has started and its count, `8/11`, inside; a failed agent's segment is dashed red |
 | small disc | a subagent |
 | `>` box | a background shell, still writing |
 | `~` box | a Monitor watch, still armed |
