@@ -568,6 +568,61 @@ void rememberTool(Building& b, const AgentEvent& ev)
         b.card.tools.erase(b.card.tools.begin());
 }
 
+bool writesFiles(const std::string& tool)
+{
+    return tool == "Edit" || tool == "Write" || tool == "MultiEdit" || tool == "NotebookEdit";
+}
+
+// File the path a write tool was given, one entry per file, latest time wins.
+//
+// No hook field of its own: `text` already carries file_path uncut for exactly
+// these four tools, so a log written by an older cxhook works too. `detail` is
+// the fallback for a line that has no `text`, and is refused when cut, since
+// half a path matches nothing and would only ever be a false negative anyway.
+void rememberWrite(Building& b, const AgentEvent& ev)
+{
+    if (!writesFiles(ev.tool))
+        return;
+
+    std::string raw = ev.text.empty() ? ev.detail : ev.text;
+    if (raw.empty() || raw.ends_with(" ..."))
+        return;
+
+    fs::path path(widen(raw));
+    if (path.is_relative()) {
+        if (ev.cwd.empty())
+            return;
+        path = ev.cwd / path;
+    }
+    path = path.lexically_normal();
+
+    std::string key = narrow(path.wstring());
+    std::replace(key.begin(), key.end(), '\\', '/');
+    // ASCII only. Folding UTF-8 byte by byte would corrupt it, and a path that
+    // differs only in the case of a non-ASCII letter is rare enough to miss.
+    for (char& ch : key) {
+        if (ch >= 'A' && ch <= 'Z')
+            ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    while (key.size() > 1 && key.back() == '/')
+        key.pop_back();
+
+    for (FileWrite& w : b.card.writes) {
+        if (w.key == key) {
+            w.tsMs = std::max(w.tsMs, ev.tsMs);
+            return;
+        }
+    }
+
+    b.card.writes.push_back({std::move(key), narrow(path.filename().wstring()), ev.tsMs});
+    if (b.card.writes.size() > kMaxRecentWrites) {
+        const auto oldest = std::min_element(
+            b.card.writes.begin(), b.card.writes.end(),
+            [](const FileWrite& x, const FileWrite& y) { return x.tsMs < y.tsMs; });
+        b.card.writes.erase(oldest);
+    }
+}
+
 void applyEvent(Building& b, const AgentEvent& ev)
 {
     if (b.card.cwd.empty())
@@ -609,6 +664,7 @@ void applyEvent(Building& b, const AgentEvent& ev)
         if (std::string line = toolLine(ev); !line.empty())
             b.card.activity = std::move(line);
         rememberTool(b, ev);
+        rememberWrite(b, ev);
         answered(b);
     } else if (ev.event == "UserPromptSubmit") {
         if (!ev.detail.empty())

@@ -194,6 +194,20 @@ struct ToolCall {
     std::int64_t tsMs = 0;
 };
 
+// One file a session or one of its subagents wrote, off a PreToolUse on Edit,
+// Write, MultiEdit or NotebookEdit. Kept separately from `tools` because that
+// list is capped at the last sixteen calls of any kind, and a session that
+// edited a file and then read forty others has not stopped being a hazard to
+// whoever else is editing it.
+struct FileWrite {
+    // Lowercased, forward slashes, no trailing separator: the comparison key.
+    // NTFS is case-insensitive and Claude Code hands over whichever spelling
+    // the model typed, so two sessions on one file can disagree on both.
+    std::string  key;
+    std::string  name;   // the basename as written, for a label
+    std::int64_t tsMs = 0;
+};
+
 // One Workflow tool run, folded from the three files it writes.
 struct WorkflowRun {
     std::string runId;    // wf_a3f3cbaa-9df
@@ -349,6 +363,11 @@ struct AgentCard {
     // decided by its age against the reader's own clock, not here.
     std::vector<ToolCall> tools;
 
+    // Every distinct file written, latest timestamp per file, capped at
+    // kMaxRecentWrites. Subagents included: they share the session's id, and
+    // a collision caused by a subagent is the parent's collision.
+    std::vector<FileWrite> writes;
+
     unsigned long pid = 0;
     std::int64_t  startedAtMs    = 0;
     std::int64_t  lastActivityMs = 0;
@@ -384,6 +403,10 @@ AgentList buildBoard(const std::vector<RegistryEntry>&  registry,
 // How many tool calls a card keeps. Bounds the list; how long each is drawn is
 // a separate question, answered by whoever draws it.
 inline constexpr std::size_t kMaxRecentTools = 16;
+
+// How many written files a card keeps. Bounds memory on a session that has
+// rewritten a whole tree; the conflict window is what decides relevance.
+inline constexpr std::size_t kMaxRecentWrites = 64;
 
 // ------------------------------------------------------------------ locations
 

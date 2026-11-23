@@ -8,6 +8,7 @@ qt_add_executable(ClaudeExplorer WIN32
     node_effects.cpp
     attention_watch.cpp
     node_graph.cpp
+    conflict_edges.cpp
     agent_board.cpp
     claude_state.cpp
     claude_files.cpp

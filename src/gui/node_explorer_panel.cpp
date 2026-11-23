@@ -13,6 +13,7 @@
 #include <QPainter>
 #include <QResizeEvent>
 #include <QShowEvent>
+#include <QDateTime>
 #include <QTimer>
 
 #include <algorithm>
@@ -126,6 +127,7 @@ struct LegendRow {
     bool            rings = false;   // the NEEDS YOU halo
     bool            arc   = false;   // a run's progress
     bool            strip = false;   // the tool-family glyphs, in a row
+    int             edge  = 0;       // 1 a collision edge, 2 a shared-tree edge
 };
 
 // The strip under the tool-call row. The box's own label names the exact tool,
@@ -149,7 +151,29 @@ constexpr LegendRow kLegend[] = {
     { "task list",  true,  0.0, '#',  true,  1.0, kFg3,      kSurface },
     { "plan",       true,  0.0, '=',  true,  1.0, kFg3,      kSurface },
     { "needs you",  false, 4.0, '\0', false, 2.0, kRed,      kSurface, true },
+    { "same file",  false, 0.0, '\0', false, 1.0, kRed,      kBlack,   false, false, false, 1 },
+    { "same repo",  false, 0.0, '\0', false, 1.0, kFg4,      kBlack,   false, false, false, 2 },
 };
+
+// Edges between sessions. A collision is a dashed red hairline whose dashes
+// creep along it: red because two sessions overwriting one file is the other
+// thing on this machine worth crossing the room for, dashed and moving so it
+// cannot be mistaken for the still, solid rings of a session waiting on you.
+// A shared tree is a dotted grey thread with no label, there to explain why
+// two clusters keep drifting together rather than to raise anything.
+constexpr qreal kConflictFadeMs     = 450.0;
+constexpr int   kConflictTimerMs    = 33;
+constexpr qreal kConflictRimGap     = 9.0;    // clear of the waiting halo
+constexpr qreal kCollisionWidth     = 1.0;
+constexpr qreal kCollisionAlpha     = 0.85;
+constexpr qreal kCollisionDash      = 4.0;    // in pen widths
+constexpr qreal kCollisionGap       = 4.0;
+constexpr qreal kMarchPxPerSec      = 7.0;    // slow: a drift, not a scroll
+constexpr qreal kSharedTreeWidth    = 1.0;
+constexpr qreal kSharedTreeAlpha    = 0.9;
+constexpr qreal kConflictLabelMaxPx = 170.0;
+
+
 
 // A box's second line, under its label: what the shell is saying right now.
 constexpr qreal kDetailGap   = 2.0;
@@ -193,6 +217,28 @@ QColor withAlpha(QColor c, qreal a)
     return c;
 }
 
+qreal smoothstep(qreal t)
+{
+    t = std::clamp(t, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+QPen collisionPen(qreal alpha, qreal offset)
+{
+    QPen pen(withAlpha(theme::c(kRed), alpha), kCollisionWidth);
+    pen.setCapStyle(Qt::FlatCap);
+    pen.setDashPattern({kCollisionDash, kCollisionGap});
+    pen.setDashOffset(offset);
+    return pen;
+}
+
+QPen sharedTreePen(qreal alpha)
+{
+    QPen pen(withAlpha(theme::c(kFg4), alpha), kSharedTreeWidth, Qt::DotLine);
+    pen.setCapStyle(Qt::FlatCap);
+    return pen;
+}
+
 } // namespace
 
 NodeExplorerPanel::NodeExplorerPanel(QWidget* parent) : QWidget(parent)
@@ -224,6 +270,12 @@ NodeExplorerPanel::NodeExplorerPanel(QWidget* parent) : QWidget(parent)
     ringTick_->setTimerType(Qt::CoarseTimer);
     connect(ringTick_, &QTimer::timeout, this, &NodeExplorerPanel::onRingTick);
     ringClock_.start();
+
+    conflictTick_ = new QTimer(this);
+    conflictTick_->setInterval(kConflictTimerMs);
+    conflictTick_->setTimerType(Qt::CoarseTimer);
+    connect(conflictTick_, &QTimer::timeout, this, &NodeExplorerPanel::onConflictTick);
+    conflictClock_.start();
 }
 
 void NodeExplorerPanel::kickRings()
@@ -251,6 +303,61 @@ void NodeExplorerPanel::onRingTick()
         update();
     if (!going)
         ringTick_->stop();
+}
+
+bool NodeExplorerPanel::updateConflicts(const AgentList& board)
+{
+    for (auto& [key, view] : conflicts_)
+        view.live = false;
+
+    std::vector<std::pair<std::string, std::string>> tethers;
+    for (ConflictEdge& e : findConflicts(board, QDateTime::currentMSecsSinceEpoch())) {
+        if (e.kind == ConflictKind::Collision)
+            tethers.emplace_back(e.a, e.b);
+        ConflictView& v = conflicts_[e.key()];
+        v.edge = std::move(e);
+        v.live = true;
+    }
+
+    // Nobody watching means nothing to fade: land every edge where it is going.
+    if (!isVisible()) {
+        for (auto it = conflicts_.begin(); it != conflicts_.end();) {
+            if (!it->second.live) {
+                it = conflicts_.erase(it);
+            } else {
+                it->second.fade = 1.0;
+                ++it;
+            }
+        }
+    } else if (!conflicts_.empty() && !conflictTick_->isActive()) {
+        conflictLastMs_ = conflictClock_.elapsed();
+        conflictTick_->start();
+    }
+
+    return graph_.setTethers(std::move(tethers));
+}
+
+void NodeExplorerPanel::onConflictTick()
+{
+    const qint64 now  = conflictClock_.elapsed();
+    const qreal  step = static_cast<qreal>(now - conflictLastMs_) / kConflictFadeMs;
+    conflictLastMs_   = now;
+
+    bool moving = false;
+    for (auto it = conflicts_.begin(); it != conflicts_.end();) {
+        ConflictView& v = it->second;
+        v.fade = std::clamp(v.fade + (v.live ? step : -step), 0.0, 1.0);
+        if (!v.live && v.fade <= 0.0) {
+            it = conflicts_.erase(it);
+            continue;
+        }
+        moving |= v.edge.kind == ConflictKind::Collision || v.fade < 1.0;
+        ++it;
+    }
+
+    update();
+    if (!moving)
+        conflictTick_->stop();
 }
 
 void NodeExplorerPanel::addToolCalls(const std::vector<LoggedCall>& calls)
@@ -308,7 +415,8 @@ void NodeExplorerPanel::setBoard(const AgentList& board)
     // Births and deaths animate only when someone is looking. A pop is an
     // event, and an event nobody saw must not be replayed on arrival.
     const bool watching = isVisible();
-    const bool changed  = graph_.setBoard(board, watching);
+    bool       changed  = graph_.setBoard(board, watching);
+    changed |= updateConflicts(board);
 
     seeded_ = true;
     publishCounts();
@@ -607,6 +715,7 @@ void NodeExplorerPanel::paintEvent(QPaintEvent*)
         return;
     }
 
+    drawConflicts(p);
     drawLinks(p);
 
     // Largest first, so a small node is never hidden under a big one. The boxes
@@ -626,6 +735,8 @@ void NodeExplorerPanel::paintEvent(QPaintEvent*)
                 drawLabel(p, n);
         }
     }
+    drawConflictLabels(p);
+
     // Terminal panes over the labels: each is opaque, and a neighbour's label
     // drawn across one would be read as a line of its output.
     ++paneFrame_;
@@ -691,6 +802,117 @@ void NodeExplorerPanel::drawLinks(QPainter& p) const
 
         p.setPen(QPen(withAlpha(base, child.alpha), major ? kLinkWidthMajor : kLinkWidthMinor));
         p.drawLine(line);
+    }
+}
+
+// The line between two session discs, trimmed clear of both rims and of any
+// halo either is wearing. Null when the discs are too close to leave a line
+// worth drawing.
+namespace {
+QLineF conflictLine(const QPointF& a, qreal ra, const QPointF& b, qreal rb)
+{
+    const QLineF full(a, b);
+    const qreal  len = full.length();
+    const qreal  ta  = ra + kConflictRimGap;
+    const qreal  tb  = rb + kConflictRimGap;
+    if (len < 1.0 || ta + tb + 12.0 >= len)
+        return QLineF();
+    return QLineF(a + (b - a) * (ta / len), b + (a - b) * (tb / len));
+}
+} // namespace
+
+void NodeExplorerPanel::drawConflicts(QPainter& p) const
+{
+    if (conflicts_.empty())
+        return;
+
+    const QSizeF view   = QSizeF(size());
+    // Negative so the dashes travel from a toward b. Which way is arbitrary;
+    // that they move at all is what separates this edge from the waiting rings.
+    const qreal  offset = -static_cast<qreal>(conflictClock_.elapsed()) / 1000.0
+                        * kMarchPxPerSec / kCollisionWidth;
+
+    // Shared trees first, so a collision crossing one is drawn over it.
+    for (const ConflictKind pass : {ConflictKind::SharedTree, ConflictKind::Collision}) {
+        for (const auto& [key, v] : conflicts_) {
+            if (v.edge.kind != pass)
+                continue;
+            const Node* a = graph_.session(v.edge.a);
+            const Node* b = graph_.session(v.edge.b);
+            if (!a || !b)
+                continue;
+
+            // A session on its way out takes its edges with it, at its pace.
+            const qreal alpha = smoothstep(v.fade) * std::min(a->alpha, b->alpha);
+            if (alpha <= 0.01)
+                continue;
+
+            const QLineF line = conflictLine(
+                camera_.toScreen(a->pos, view), a->radius * a->popScale * camera_.scale(),
+                camera_.toScreen(b->pos, view), b->radius * b->popScale * camera_.scale());
+            if (line.isNull())
+                continue;
+
+            p.setPen(pass == ConflictKind::Collision ? collisionPen(kCollisionAlpha * alpha, offset)
+                                                     : sharedTreePen(kSharedTreeAlpha * alpha));
+            p.drawLine(line);
+        }
+    }
+}
+
+// The file a collision is over, at the middle of its edge. Painted with the
+// labels rather than with the line, so no disc can sit on top of it.
+void NodeExplorerPanel::drawConflictLabels(QPainter& p) const
+{
+    static const QFont         font = theme::mono(9);
+    static const QFontMetricsF fm(font);
+    const QSizeF               view = QSizeF(size());
+
+    p.setFont(font);
+    for (const auto& [key, v] : conflicts_) {
+        if (v.edge.kind != ConflictKind::Collision || v.edge.name.empty())
+            continue;
+        const Node* a = graph_.session(v.edge.a);
+        const Node* b = graph_.session(v.edge.b);
+        if (!a || !b)
+            continue;
+        const qreal alpha = smoothstep(v.fade) * std::min(a->alpha, b->alpha);
+        if (alpha <= 0.01)
+            continue;
+
+        const QLineF line = conflictLine(
+            camera_.toScreen(a->pos, view), a->radius * a->popScale * camera_.scale(),
+            camera_.toScreen(b->pos, view), b->radius * b->popScale * camera_.scale());
+        if (line.isNull())
+            continue;
+
+        const QString more = v.edge.more > 0 ? QStringLiteral("  +%1").arg(v.edge.more) : QString();
+        const qreal   room = std::min(kConflictLabelMaxPx, line.length() - 16.0)
+                         - fm.horizontalAdvance(more);
+        if (room < kLabelMinWidthPx)
+            continue;
+        const QString name = fm.elidedText(QString::fromStdString(v.edge.name), Qt::ElideMiddle, room);
+
+        const qreal  w   = fm.horizontalAdvance(name) + fm.horizontalAdvance(more);
+        const QPointF mid = line.center();
+        const QRectF box(mid.x() - w * 0.5 - 4.0, mid.y() - fm.height() * 0.5 - 1.0,
+                         w + 8.0, fm.height() + 2.0);
+
+        // A black plate breaks the line under the text, so the dashes do not
+        // run through the letters, and a hairline in the edge's own red ties
+        // the plate back to the line it interrupts.
+        p.setBrush(theme::c(kBlack));
+        p.setPen(QPen(withAlpha(theme::c(kRedDark), 0.55 * alpha), 1.0));
+        p.drawRoundedRect(box, kBoxCorner, kBoxCorner);
+        p.setBrush(Qt::NoBrush);
+
+        const qreal base = mid.y() + (fm.ascent() - fm.descent()) * 0.5;
+        p.setPen(withAlpha(theme::c(kRed), 0.95 * alpha));
+        p.drawText(QPointF(box.left() + 4.0, base), name);
+        if (!more.isEmpty()) {
+            p.setPen(withAlpha(theme::c(kFg3), alpha));
+            p.drawText(QPointF(box.left() + 4.0 + fm.horizontalAdvance(name), base), more);
+        }
     }
 }
 
@@ -1090,7 +1312,13 @@ void NodeExplorerPanel::drawLegend(QPainter& p) const
                       r.dashed ? Qt::DotLine : Qt::SolidLine));
         p.setBrush(theme::c(r.fill));
 
-        if (r.box) {
+        if (r.edge != 0) {
+            // Drawn with the canvas's own pens, so the sample is the thing.
+            p.setPen(r.edge == 1 ? collisionPen(kCollisionAlpha, 0.0)
+                                 : sharedTreePen(kSharedTreeAlpha));
+            p.drawLine(QLineF(centre.x() - cell * 0.5 + 1.0, centre.y(),
+                              centre.x() + cell * 0.5 - 1.0, centre.y()));
+        } else if (r.box) {
             const qreal h = kLegendBox * 0.5;
             p.drawRect(QRectF(centre.x() - h, centre.y() - h, kLegendBox, kLegendBox));
             if (r.glyph == '.') {

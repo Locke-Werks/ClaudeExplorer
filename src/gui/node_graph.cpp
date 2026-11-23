@@ -129,6 +129,13 @@ constexpr qreal kMaxSpringForce = 2500.0;
 constexpr qreal kClusterPush = 20.0;
 constexpr qreal kClusterGap  = 40.0;
 
+// The collision tether: a twentieth of a link spring, capped far under one,
+// and slack until the two clusters are further apart than the cluster push
+// would hold them anyway. See NodeGraph::setTethers.
+constexpr qreal kTetherStiffness = 0.3;
+constexpr qreal kTetherMaxForce  = 120.0;
+constexpr qreal kTetherSlack     = 1.5;   // times kClusterGap past touching
+
 // Insurance only. Every internal force is equal and opposite, so the graph
 // cannot translate itself and the fence never fires in practice.
 constexpr qreal kFenceRadius = 900.0;
@@ -1335,6 +1342,28 @@ void NodeGraph::step(qreal dt)
         }
     }
 
+    for (const auto& [ka, kb] : tethers_) {
+        const auto ia = index_.find(ka);
+        const auto ib = index_.find(kb);
+        if (ia == index_.end() || ib == index_.end())
+            continue;
+        Node& a = nodes_[ia->second];
+        Node& b = nodes_[ib->second];
+
+        const QPointF off  = b.pos - a.pos;
+        const qreal   d    = std::max(length(off), 1.0);
+        const qreal   rest = a.clusterRadius + b.clusterRadius + kClusterGap * kTetherSlack;
+        if (d <= rest)
+            continue;
+
+        const qreal mag = std::min(kTetherStiffness * (d - rest), kTetherMaxForce)
+                        * a.influence * b.influence;
+        const qreal   k = mag / d;
+        const QPointF f(off.x() * k, off.y() * k);
+        a.force += f;
+        b.force -= f;
+    }
+
     // Springs, equal and opposite. Nothing pins a parent: mass is what makes
     // the hierarchy, and breaking Newton's third law here would let the whole
     // graph translate itself off the canvas.
@@ -1566,6 +1595,28 @@ QRectF NodeGraph::bounds() const
         box = box.united(QRectF(n.pos.x() - r, n.pos.y() - r, 2.0 * r, 2.0 * r));
     }
     return box;
+}
+
+bool NodeGraph::setTethers(std::vector<std::pair<std::string, std::string>> pairs)
+{
+    for (auto& [a, b] : pairs) {
+        a = sessionKey(a);
+        b = sessionKey(b);
+    }
+    std::sort(pairs.begin(), pairs.end());
+    if (pairs == tethers_)
+        return false;
+    tethers_ = std::move(pairs);
+    return true;
+}
+
+const Node* NodeGraph::session(const std::string& sessionId) const
+{
+    const auto it = index_.find(sessionKey(sessionId));
+    if (it == index_.end())
+        return nullptr;
+    const Node& n = nodes_[it->second];
+    return n.kind == NodeKind::Session ? &n : nullptr;
 }
 
 int NodeGraph::count(NodeKind kind) const
