@@ -551,6 +551,7 @@ void NodeExplorerPanel::paintEvent(QPaintEvent*)
         drawNotice(p, seeded_ ? QStringLiteral("Nothing running.")
                               : QStringLiteral("Reading sessions."));
         drawToolLog(p);
+        drawEffects(p);
         return;
     }
 
@@ -604,6 +605,7 @@ void NodeExplorerPanel::paintEvent(QPaintEvent*)
     if (legend_)
         drawLegend(p);
     drawToolLog(p);
+    drawEffects(p);
 }
 
 void NodeExplorerPanel::drawLinks(QPainter& p) const

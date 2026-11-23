@@ -5,6 +5,8 @@ qt_add_executable(ClaudeExplorer WIN32
     explorer_window.cpp
     board_watcher.cpp
     node_explorer_panel.cpp
+    node_effects.cpp
+    attention_watch.cpp
     node_graph.cpp
     agent_board.cpp
     claude_state.cpp
@@ -19,6 +21,7 @@ target_link_libraries(ClaudeExplorer PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    user32
 )
 
 cx_apply_warnings(ClaudeExplorer)

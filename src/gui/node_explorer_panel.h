@@ -61,6 +61,13 @@ public:
     // it again does not replay a backlog.
     void addToolCalls(const std::vector<LoggedCall>& calls);
 
+    // One expanding red ring off a session's disc, for the moment it starts
+    // waiting. Nothing happens if the session is not on the canvas.
+    void ripple(const std::string& sessionId);
+
+    // A line of text in the notice style that holds briefly and fades.
+    void flash(const QString& text);
+
 signals:
     // "3 sessions  2 runs  5 agents", for the window title.
     void countsChanged(QString summary);
@@ -99,6 +106,18 @@ private:
     void drawLegend(QPainter& p) const;
     void drawToolLog(QPainter& p) const;
     void onLogTick();
+
+    // Ripples and the flash, painted after everything else. Their own timer so
+    // they neither wake the physics nor depend on it, and it stops the frame
+    // they are all gone.
+    void drawEffects(QPainter& p) const;
+    void onFxTick();
+    void startFx();
+
+    struct Ripple {
+        std::string sessionId;
+        qint64      bornMs = 0;   // on fxClock_
+    };
 
     // One line of the tool log. `y` glides toward the line's slot, which is
     // what pushes the older lines down when a new one lands on top.
@@ -143,6 +162,12 @@ private:
     QTimer*             logTick_ = nullptr;
     QElapsedTimer       logClock_;
     qint64              logLastMs_ = 0;
+
+    std::vector<Ripple> ripples_;
+    QString             flashText_;
+    qint64              flashBornMs_ = 0;
+    QTimer*             fxTick_ = nullptr;
+    QElapsedTimer       fxClock_;
 };
 
 } // namespace cx::gui
