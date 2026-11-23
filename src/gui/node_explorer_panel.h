@@ -77,6 +77,12 @@ private:
     void warm();
     void publishCounts();
 
+    // Measure every node's text in pixels and hand the sizes to the graph,
+    // which keeps other nodes out from under it. Runs when a board lands or a
+    // pane is switched, never per frame. Returns whether a box moved enough to
+    // matter.
+    bool measureText();
+
     void drawLinks(QPainter& p) const;
     void drawNode(QPainter& p, const Node& n) const;
     void drawLabel(QPainter& p, const Node& n) const;

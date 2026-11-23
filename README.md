@@ -87,6 +87,11 @@ would have in a terminal. The dependency edges survive as indentation, so a
 blocked item still sits under the thing blocking it and costs one glyph instead
 of an edge the eye has to trace.
 
+Text is terrain. Labels, task blocks and terminal panes are drawn at a fixed
+size on screen, and the layout keeps every node out from under text that is not
+its own: a new node comes out of its parent on the clearest side, and one that
+drifts under a label is eased back out of it.
+
 Sessions that have finished are not drawn at all.
 
 ## Keys

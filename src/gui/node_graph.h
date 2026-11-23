@@ -88,6 +88,15 @@ enum class NodeShape { Disc, Box };
 // snapping into a hole that appeared between two frames.
 enum class NodePhase { Born, Alive, Dying };
 
+// Where a node's text sits relative to it. The panel measures the text and the
+// graph places the box, so the physics can keep other nodes out from under it
+// without knowing anything about fonts.
+enum class TextPlace {
+    None,
+    Under,   // centred below the node: a session's or a run's name
+    Side,    // beside it on the labelRight side, centred on it vertically
+};
+
 struct Node {
     NodeKind    kind = NodeKind::Agent;
     std::string key;
@@ -182,6 +191,12 @@ struct Node {
     // otherwise.
     bool dashed = false;
 
+    // The text drawn for this node, in logical pixels, as the panel last
+    // measured it. Pixels rather than world units because text does not zoom:
+    // the graph divides by the camera scale when it needs the box in the world.
+    TextPlace textPlace = TextPlace::None;
+    QSizeF    textPx;
+
     int           spawnOrdinal = 0;
     std::uint64_t seen         = 0;
 };
@@ -267,7 +282,30 @@ public:
     bool  empty() const { return nodes_.empty(); }
     int   count(NodeKind kind) const;
 
+    // The measured text of one node, from the panel after each board. Kept on
+    // the node so it follows it through every substep without a repaint.
+    void setText(std::size_t slot, TextPlace place, const QSizeF& px);
+
+    // Logical pixels per world unit, so a text box measured in pixels can be
+    // placed in the world. Small changes are ignored: a camera gliding in by a
+    // fraction of a percent must not count as the obstacles moving.
+    void setTextScale(qreal scale);
+
+    // The world box a node's text covers, padded. Null when it has none.
+    QRectF textRect(const Node& n) const;
+
+    // Whether some node sits well inside text it does not own. What decides
+    // that a label which changed width is worth waking the simulation for.
+    bool textOverlapping() const;
+
 private:
+    // Keeps nodes out from under text they do not own. See the definition.
+    void avoidText();
+
+    // The clearest direction out of a parent for a newborn, scored against
+    // every text box and every body already there.
+    QPointF spawnDirection(const Node& parent, qreal rest, qreal radius, qreal preferred) const;
+
     std::size_t touch(const std::string& key, NodeKind kind, const std::string& parentKey,
                       bool animate, bool* born);
     void        resolveParents();
@@ -276,6 +314,7 @@ private:
     std::unordered_map<std::string, std::size_t> index_;
     std::uint64_t                                stamp_ = 0;
     int                                          sessionOrdinal_ = 0;
+    qreal                                        textScale_ = 1.0;
 };
 
 } // namespace cx::gui
