@@ -100,6 +100,13 @@ private:
     void drawToolLog(QPainter& p) const;
     void onLogTick();
 
+    // The run rings' own frames: a sweep on a running segment and the ease of
+    // one filling. Kept off the physics timer for the same reason as the log,
+    // and at half its rate, since nothing in a ring moves fast.
+    void onRingTick();
+    void kickRings();
+    void drawRunCount(QPainter& p, const Node& n, const QPointF& c, qreal r) const;
+
     // One line of the tool log. `y` glides toward the line's slot, which is
     // what pushes the older lines down when a new one lands on top.
     struct LogLine {
@@ -143,6 +150,10 @@ private:
     QTimer*             logTick_ = nullptr;
     QElapsedTimer       logClock_;
     qint64              logLastMs_ = 0;
+
+    QTimer*       ringTick_ = nullptr;
+    QElapsedTimer ringClock_;
+    qint64        ringLastMs_ = 0;
 };
 
 } // namespace cx::gui
