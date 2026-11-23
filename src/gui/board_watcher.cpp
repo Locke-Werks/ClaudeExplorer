@@ -280,6 +280,16 @@ void BoardWatcher::buildAndPost()
 
     AgentList board = buildBoard(registry, events, files, jobs, readPlans(kPlanWindowMs));
 
+    // Only sessions the canvas draws: a finished one's transcript is history.
+    for (AgentCard& card : board) {
+        if (card.column == AgentColumn::Done)
+            continue;
+        const ContextUsage u = usage_.read(card.sessionId, card.cwd);
+        card.contextTokens   = u.tokens;
+        card.contextLimit    = u.limit;
+        card.transcriptMs    = u.writeMs;
+    }
+
     // Emitted from inside the posted lambda, so the signal runs on the GUI
     // thread as a direct call and the list never crosses as a queued argument.
     QMetaObject::invokeMethod(

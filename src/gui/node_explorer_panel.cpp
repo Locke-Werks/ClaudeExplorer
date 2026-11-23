@@ -3,6 +3,7 @@
 #include "theme_qt.h"
 #include "work_marks.h"
 
+#include <QDateTime>
 #include <QFontMetricsF>
 #include <QtMath>
 
@@ -29,6 +30,30 @@ using namespace cx::theme;
 // A zero interval would run as fast as the event loop allows and burn a core
 // drawing the same frame twice.
 constexpr int kTimerMs = 16;
+
+// The slow repaint. A stalled session breathes over seconds and a ghost fades
+// over minutes, so ten frames a second is smooth for both and costs a fraction
+// of the frame loop, which stays asleep: neither moves anything.
+constexpr int kSlowTimerMs = 100;
+
+// One breath of a stalled rim, and how far down it goes. Slow and shallow on
+// purpose: it says "still here, not doing anything", which is not an alarm.
+constexpr qreal kBreathMs  = 6400.0;
+constexpr qreal kBreathLow = 0.4;
+
+// The context ring, inside the session's rim so it never collides with the
+// NEEDS YOU halo outside it. Logical pixels.
+constexpr qreal kContextWidth     = 1.3;
+constexpr qreal kContextInsetMin  = 3.0;
+constexpr qreal kContextInsetFrac = 0.17;
+constexpr qreal kContextMinRadius = 9.0;    // below this the ring is noise
+constexpr qreal kContextWarnFrom  = 0.75;   // grey starts turning here
+constexpr qreal kContextWarnFull  = 0.85;   // and is fully amber here
+
+// A ghost: a hairline outline a little smaller than the body it was, never
+// stronger than this.
+constexpr qreal kGhostAlpha  = 0.85;
+constexpr qreal kGhostShrink = 0.1;
 
 // A frame is stepped in whole substeps of kFixedStep. Eight absorbs a 66ms
 // hitch and then drops the rest rather than spiralling, and a frame longer than
@@ -128,6 +153,8 @@ struct LegendRow {
     bool            arc   = false;   // a run's progress
     bool            strip = false;   // the tool-family glyphs, in a row
     int             edge  = 0;       // 1 a collision edge, 2 a shared-tree edge
+    bool            context = false;   // a session's context ring
+    bool            ghost   = false;   // a finished session's outline
 };
 
 // The strip under the tool-call row. The box's own label names the exact tool,
@@ -150,6 +177,9 @@ constexpr LegendRow kLegend[] = {
       false, false, true },
     { "task list",  true,  0.0, '#',  true,  1.0, kFg3,      kSurface },
     { "plan",       true,  0.0, '=',  true,  1.0, kFg3,      kSurface },
+    { "context",    false, 6.0, '\0', false, 2.0, kFg2,      kSurface, false, false, false, 0, true },
+    { "stalled",    false, 6.0, '\0', false, 2.0, kFg4,      kSurface },
+    { "finished",   false, 6.0, '\0', true,  1.0, kFg4,      kBlack,   false, false, false, 0, false, true },
     { "needs you",  false, 4.0, '\0', false, 2.0, kRed,      kSurface, true },
     { "same file",  false, 0.0, '\0', false, 1.0, kRed,      kBlack,   false, false, false, 1 },
     { "same repo",  false, 0.0, '\0', false, 1.0, kFg4,      kBlack,   false, false, false, 2 },
@@ -239,6 +269,81 @@ QPen sharedTreePen(qreal alpha)
     return pen;
 }
 
+QColor blend(const QColor& a, const QColor& b, qreal t)
+{
+    const auto mix = [t](int x, int y) {
+        return std::clamp(qRound(static_cast<qreal>(x) + (static_cast<qreal>(y - x)) * t), 0, 255);
+    };
+    return QColor(mix(a.red(), b.red()), mix(a.green(), b.green()), mix(a.blue(), b.blue()),
+                  mix(a.alpha(), b.alpha()));
+}
+
+qint64 wallMs() { return QDateTime::currentMSecsSinceEpoch(); }
+
+// A rim as it should be drawn this instant. A stalled session's rim slides to
+// the caption grey and breathes on the wall clock, so the breath is continuous
+// whichever timer happens to be painting.
+QColor rimColor(const Node& n)
+{
+    if (n.stall <= 0.001)
+        return withAlpha(n.rim, n.alpha);
+
+    const qreal phase  = static_cast<qreal>(wallMs() % static_cast<qint64>(kBreathMs)) / kBreathMs;
+    const qreal breath = 0.5 + 0.5 * std::cos(phase * 2.0 * M_PI);
+    const qreal depth  = 1.0 - (1.0 - kBreathLow) * (1.0 - breath);
+    const QColor base  = blend(n.rim, theme::c(kFg4), n.stall);
+    return withAlpha(base, n.alpha * (1.0 - n.stall * (1.0 - depth)));
+}
+
+// How full the context window is, as an arc just inside the rim from twelve
+// o'clock. Grey while there is room; amber as it closes on the limit, which is
+// the point where a session starts compacting and forgetting.
+void drawContextRing(QPainter& p, const Node& n, const QPointF& c, qreal r)
+{
+    if (n.kind != NodeKind::Session || n.context < 0.0 || r < kContextMinRadius)
+        return;
+
+    const qreal  inset = std::max(kContextInsetMin, r * kContextInsetFrac);
+    const qreal  rr    = r - inset;
+    const QRectF box(c.x() - rr, c.y() - rr, 2.0 * rr, 2.0 * rr);
+    const qreal  dim   = n.alpha * (1.0 - 0.4 * n.stall);
+
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(withAlpha(theme::c(kBorderHi), dim), kContextWidth));
+    p.drawEllipse(box);
+
+    const int span = qRound(360.0 * std::clamp(n.context, 0.0, 1.0) * 16.0);
+    if (span == 0)
+        return;
+
+    const qreal warn = std::clamp((n.context - kContextWarnFrom)
+                                      / (kContextWarnFull - kContextWarnFrom),
+                                  0.0, 1.0);
+    const QColor ink = blend(theme::c(kFg3), theme::c(kWarning), warn * warn * (3.0 - 2.0 * warn));
+    QPen pen(withAlpha(ink, dim), kContextWidth);
+    pen.setCapStyle(Qt::FlatCap);
+    p.setPen(pen);
+    p.drawArc(box, 90 * 16, -span);
+}
+
+// A session that has finished: an outline and nothing else, drawn on the wall
+// clock so it keeps fading while the frame loop sleeps.
+void drawGhost(QPainter& p, const Node& n, const QPointF& c, qreal r, qint64 now)
+{
+    const qreal mix  = ghostMix(n, now);
+    const qreal fade = ghostFade(n, now);
+    const qreal a    = kGhostAlpha * mix * fade * n.alpha;
+    if (a <= 0.004)
+        return;
+
+    QPen pen(withAlpha(theme::c(kFg4), a), 1.0);
+    pen.setDashPattern({ 3.0, 3.0 });
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    const qreal rg = r * (1.0 - kGhostShrink * mix);
+    p.drawEllipse(c, rg, rg);
+}
+
 } // namespace
 
 NodeExplorerPanel::NodeExplorerPanel(QWidget* parent) : QWidget(parent)
@@ -258,6 +363,11 @@ NodeExplorerPanel::NodeExplorerPanel(QWidget* parent) : QWidget(parent)
     // the whole machine, and the accumulator absorbs the jitter anyway.
     tick_->setTimerType(Qt::CoarseTimer);
     connect(tick_, &QTimer::timeout, this, &NodeExplorerPanel::onTick);
+
+    slow_ = new QTimer(this);
+    slow_->setInterval(kSlowTimerMs);
+    slow_->setTimerType(Qt::CoarseTimer);
+    connect(slow_, &QTimer::timeout, this, &NodeExplorerPanel::onSlowTick);
 
     logTick_ = new QTimer(this);
     logTick_->setInterval(kLogTimerMs);
@@ -428,12 +538,36 @@ void NodeExplorerPanel::setBoard(const AgentList& board)
         kickRings();
     }
 
-    if (!changed)
+    if (!changed) {
+        syncSlow();
         return;
+    }
     if (watching)
         wake();
     else
         warmNeeded_ = true;
+}
+
+void NodeExplorerPanel::syncSlow()
+{
+    const bool want = isVisible() && !tick_->isActive() && graph_.slowAnimating();
+    if (want && !slow_->isActive())
+        slow_->start();
+    else if (!want && slow_->isActive())
+        slow_->stop();
+}
+
+void NodeExplorerPanel::onSlowTick()
+{
+    // A ghost whose time ran out leaves a gap the survivors should flow into,
+    // which is the simulation's job, not a repaint's.
+    if (graph_.sweepDead()) {
+        publishCounts();
+        wake();
+        return;
+    }
+    update();
+    syncSlow();
 }
 
 void NodeExplorerPanel::setTerminalsVisible(bool on)
@@ -617,6 +751,7 @@ void NodeExplorerPanel::wake()
     quiet_       = 0;
     accumulator_ = 0;
     clock_.restart();
+    slow_->stop();
     if (!tick_->isActive())
         tick_->start();
 }
@@ -658,6 +793,7 @@ void NodeExplorerPanel::onTick()
         graph_.rest();
         accumulator_ = 0;
         tick_->stop();
+        syncSlow();
     }
 }
 
@@ -684,6 +820,7 @@ void NodeExplorerPanel::hideEvent(QHideEvent* e)
     // time would read as a loading state rather than as a view.
     tick_->stop();
     ringTick_->stop();
+    slow_->stop();
     QWidget::hideEvent(e);
 }
 
@@ -924,6 +1061,22 @@ void NodeExplorerPanel::drawNode(QPainter& p, const Node& n) const
     if (r < kMinDrawRadius || n.alpha <= 0.01)
         return;
 
+    // A ghost crossfades out of the body it was: the outline comes up while
+    // the body, drawn as itself at the remaining strength, goes down.
+    if (n.ghost) {
+        const qint64 now = wallMs();
+        drawGhost(p, n, c, r, now);
+        const qreal live = 1.0 - ghostMix(n, now);
+        if (live <= 0.01)
+            return;
+        Node body      = n;
+        body.ghost     = false;
+        body.attention = false;
+        body.alpha    *= live;
+        drawNode(p, body);
+        return;
+    }
+
     if (n.attention) {
         const auto ring = [&](qreal out, int alpha) {
             const QColor cc = withAlpha(withAlpha(theme::c(kRed),
@@ -937,7 +1090,7 @@ void NodeExplorerPanel::drawNode(QPainter& p, const Node& n) const
         ring(kHaloOuter, kHaloOuterAlpha);
     }
 
-    QPen rim(withAlpha(n.rim, n.alpha), n.rimWidth);
+    QPen rim(rimColor(n), n.rimWidth);
     if (n.dashed) {
         // In rim widths, so the dash keeps its proportions as the camera zooms.
         rim.setDashPattern({ 2.4, 2.0 });
@@ -971,6 +1124,7 @@ void NodeExplorerPanel::drawNode(QPainter& p, const Node& n) const
     }
 
     p.drawEllipse(c, r, r);
+    drawContextRing(p, n, c, r);
 
     if (n.kind == NodeKind::Run && n.segTotal > 0) {
         RingState ring;
@@ -1070,7 +1224,18 @@ void NodeExplorerPanel::drawLabel(QPainter& p, const Node& n) const
 
     const QFontMetricsF fm(font);
     p.setFont(font);
-    p.setPen(withAlpha(n.labelColor, n.alpha));
+
+    // A ghost's name stays, greyed and fading with its outline, so the eye
+    // can still tell which session it was that finished.
+    qreal  ink   = n.alpha;
+    QColor color = n.labelColor;
+    if (n.ghost) {
+        const qint64 now = wallMs();
+        const qreal  mix = ghostMix(n, now);
+        color = blend(n.labelColor, theme::c(kFg4), mix);
+        ink *= ghostFade(n, now) * (1.0 - 0.3 * mix);
+    }
+    p.setPen(withAlpha(color, ink));
 
     if (under) {
         const qreal cap = n.kind == NodeKind::Session ? kSessionLabelMaxPx : kLabelMaxPx;
@@ -1082,6 +1247,20 @@ void NodeExplorerPanel::drawLabel(QPainter& p, const Node& n) const
         const qreal   x   = std::clamp(c.x() - adv * 0.5, kLabelPad,
                                        std::max(kLabelPad, view.width() - kLabelPad - adv));
         p.drawText(QPointF(x, c.y() + r + kLabelGap + fm.ascent()), cut);
+
+        // How long a stalled session has been silent, under its name, in the
+        // caption grey. Fades in with the stall rather than appearing.
+        if (n.kind == NodeKind::Session && n.stall > 0.01 && !n.idleText.isEmpty()) {
+            const QFont         small = theme::mono(9);
+            const QFontMetricsF sfm(small);
+            const qreal         sadv = sfm.horizontalAdvance(n.idleText);
+            const qreal         sx   = std::clamp(c.x() - sadv * 0.5, kLabelPad,
+                                                  std::max(kLabelPad, view.width() - kLabelPad - sadv));
+            p.setFont(small);
+            p.setPen(withAlpha(theme::c(kFg4), ink * n.stall));
+            p.drawText(QPointF(sx, c.y() + r + kLabelGap + fm.height() + 1.0 + sfm.ascent()),
+                       n.idleText);
+        }
         return;
     }
 
@@ -1341,6 +1520,16 @@ void NodeExplorerPanel::drawLegend(QPainter& p) const
                 p.setPen(QPen(theme::c(kRed), 1.0));
                 p.drawEllipse(centre, r.radius + 2.5, r.radius + 2.5);
                 p.drawEllipse(centre, r.radius + 5.0, r.radius + 5.0);
+            }
+            // The context ring sits inside the rim, as it does on the canvas.
+            if (r.context) {
+                p.setBrush(Qt::NoBrush);
+                const QRectF box(centre.x() - r.radius + 2.5, centre.y() - r.radius + 2.5,
+                                 (r.radius - 2.5) * 2, (r.radius - 2.5) * 2);
+                p.setPen(QPen(theme::c(kBorderHi), 1.0));
+                p.drawEllipse(box);
+                p.setPen(QPen(theme::c(kFg3), 1.2));
+                p.drawArc(box, 90 * 16, -250 * 16);
             }
             // A run carries an arc saying how far through its agents it is.
             // Drawn by the canvas's own ring with the sweep frozen: three
