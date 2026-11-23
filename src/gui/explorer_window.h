@@ -1,5 +1,7 @@
 #pragma once
 
+#include "agent_board.h"
+
 #include <QWidget>
 
 class QKeyEvent;
@@ -8,6 +10,7 @@ namespace cx::gui {
 
 class BoardWatcher;
 class NodeExplorerPanel;
+class ReplayController;
 
 // The whole product: one canvas, and the thread that feeds it.
 //
@@ -35,8 +38,14 @@ private:
     void toggleFullScreen();
     void setCounts(const QString& summary);
 
-    BoardWatcher*      watch_ = nullptr;
+    BoardWatcher*      watch_  = nullptr;
     NodeExplorerPanel* canvas_ = nullptr;
+    ReplayController*  replay_ = nullptr;
+
+    // The watcher's latest board, kept while replay has the canvas so that
+    // returning to live shows the present at once rather than after the next
+    // rebuild.
+    AgentList live_;
 };
 
 } // namespace cx::gui

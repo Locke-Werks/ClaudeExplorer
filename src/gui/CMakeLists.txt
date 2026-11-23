@@ -6,6 +6,9 @@ qt_add_executable(ClaudeExplorer WIN32
     board_watcher.cpp
     node_explorer_panel.cpp
     node_graph.cpp
+    replay_controller.cpp
+    replay_hud.cpp
+    replay_timeline.cpp
     agent_board.cpp
     claude_state.cpp
     claude_files.cpp

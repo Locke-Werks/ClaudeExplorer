@@ -2,6 +2,7 @@
 
 #include "board_watcher.h"
 #include "node_explorer_panel.h"
+#include "replay_controller.h"
 
 #include <QEvent>
 #include <QKeyEvent>
@@ -45,9 +46,26 @@ ExplorerWindow::ExplorerWindow()
     // One emit, one canvas. The watcher is constructed before it is started so
     // the connection is in place when the first board lands, which on a machine
     // with sessions already running is within a few milliseconds.
+    //
+    // Replay sits between the two. The watcher never stops, so live is current
+    // the moment replay ends; its boards are only held back from the canvas.
+    replay_ = new ReplayController(this);
+    connect(replay_, &ReplayController::boardReady, canvas_, &NodeExplorerPanel::setBoard);
+    connect(replay_, &ReplayController::toolCallsLogged, canvas_,
+            &NodeExplorerPanel::addToolCalls);
+    connect(replay_, &ReplayController::returnedLive, this, [this] { canvas_->setBoard(live_); });
+
     watch_ = new BoardWatcher(this);
-    connect(watch_, &BoardWatcher::boardReady, canvas_, &NodeExplorerPanel::setBoard);
-    connect(watch_, &BoardWatcher::toolCallsLogged, canvas_, &NodeExplorerPanel::addToolCalls);
+    connect(watch_, &BoardWatcher::boardReady, this, [this](const AgentList& board) {
+        live_ = board;
+        if (!replay_->active())
+            canvas_->setBoard(board);
+    });
+    connect(watch_, &BoardWatcher::toolCallsLogged, this,
+            [this](const std::vector<LoggedCall>& calls) {
+                if (!replay_->active())
+                    canvas_->addToolCalls(calls);
+            });
     watch_->start();
 }
 
@@ -78,6 +96,9 @@ void ExplorerWindow::toggleFullScreen()
 
 void ExplorerWindow::keyPressEvent(QKeyEvent* e)
 {
+    if (replay_->handleKey(e))
+        return;
+
     switch (e->key()) {
     case Qt::Key_F11:
         toggleFullScreen();

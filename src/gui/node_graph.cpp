@@ -1,5 +1,6 @@
 #include "node_graph.h"
 
+#include "replay_clock.h"
 #include "theme_qt.h"
 
 #include <QDateTime>
@@ -269,9 +270,10 @@ constexpr char kSep = '\x1f';   // cannot appear in any id Claude Code writes
 
 // Unix milliseconds. Qt's rather than <chrono>'s, because this file already has
 // Qt and QDateTime is what the rest of the GUI would reach for.
+// The playhead while replaying, so a reconstructed board ages the way it did.
 std::int64_t nowUnixMs()
 {
-    return QDateTime::currentMSecsSinceEpoch();
+    return boardClockMs();
 }
 
 std::string sessionKey(const std::string& session)
