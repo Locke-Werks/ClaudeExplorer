@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // The agent board as a shape rather than as four columns.
@@ -263,6 +264,20 @@ public:
     // sending it somewhere on the way out.
     QRectF bounds() const;
 
+    // Pairs of session ids pulled gently toward each other: two sessions
+    // writing the same file. Returns whether the set changed, which is a
+    // reason to wake the simulation.
+    //
+    // Weak on purpose and only ever attractive, and only past the distance the
+    // cluster push already keeps them at. It nudges the two discs onto
+    // neighbouring sides of the canvas so the edge between them is short and
+    // readable; it must never be strong enough to drag one cluster through
+    // another, which is what a link spring this strength would do.
+    bool setTethers(std::vector<std::pair<std::string, std::string>> pairs);
+
+    // A session's node by its id, or null when it is not on the canvas.
+    const Node* session(const std::string& sessionId) const;
+
     const std::vector<Node>& nodes() const { return nodes_; }
     bool  empty() const { return nodes_.empty(); }
     int   count(NodeKind kind) const;
@@ -274,6 +289,7 @@ private:
 
     std::vector<Node>                            nodes_;
     std::unordered_map<std::string, std::size_t> index_;
+    std::vector<std::pair<std::string, std::string>> tethers_;   // node keys
     std::uint64_t                                stamp_ = 0;
     int                                          sessionOrdinal_ = 0;
 };

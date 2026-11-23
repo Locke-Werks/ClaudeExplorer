@@ -68,6 +68,8 @@ done.** Press `K` if you want the key on screen; it is on by default.
 | `.` box | the tool call in flight this instant |
 | `#` box | the session's task list, drawn as a block beside it |
 | `=` box | the plan document it wrote |
+| red dashed edge, creeping | two sessions wrote the same file in the last 15 minutes, named at its middle |
+| grey dotted edge | two sessions writing in the same repository, different files |
 
 **A solid rim means something is executing this instant. A broken rim means
 armed or inert.** A monitor between two events is waiting, not working, and a
@@ -76,7 +78,12 @@ which is what lets one glance separate the things that are happening from the
 things that are merely there.
 
 A session with two hairline rings around it has stopped and is waiting for you.
-It is the only red on the canvas.
+The only other red on the canvas is an edge between two sessions that are both
+writing the same file, which neither of them can see and which ends with one
+silently overwriting the other. Its dashes creep and the rings never move, so
+the two do not read alike. It pulls the pair gently together and lets go once
+fifteen minutes pass without either touching the file again. Subagents count
+as their session, and two worktrees of one repository count as two trees.
 
 The task list is drawn as one block rather than as a node per item, which is a
 deliberate reversal. A node per item is the shape the data has and it read
@@ -147,6 +154,7 @@ read straight off disk and do not need the hooks. What does need them:
 - a monitor's expiry, and therefore whether it is still armed
 - telling a subagent's tool call apart from its parent session's
 - joining a plan document to the session that wrote it
+- which files a session wrote, and therefore every edge between two sessions
 
 You can change your mind later. `cxhook install` and `cxhook uninstall` are on
 PATH once the product is installed, and `cxhook status` says what is currently

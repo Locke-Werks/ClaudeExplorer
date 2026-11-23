@@ -6,6 +6,7 @@ qt_add_executable(ClaudeExplorer WIN32
     board_watcher.cpp
     node_explorer_panel.cpp
     node_graph.cpp
+    conflict_edges.cpp
     agent_board.cpp
     claude_state.cpp
     claude_files.cpp

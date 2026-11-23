@@ -1,6 +1,7 @@
 #pragma once
 
 #include "agent_board.h"
+#include "conflict_edges.h"
 #include "node_graph.h"
 
 #include <QElapsedTimer>
@@ -100,6 +101,15 @@ private:
     void drawToolLog(QPainter& p) const;
     void onLogTick();
 
+    // Edges between sessions working in the same tree. Kept apart from the
+    // node graph's own links because they join two clusters rather than a
+    // parent and child, and they fade on their own clock: an edge can expire
+    // with both sessions still running.
+    bool updateConflicts(const AgentList& board);
+    void onConflictTick();
+    void drawConflicts(QPainter& p) const;
+    void drawConflictLabels(QPainter& p) const;
+
     // One line of the tool log. `y` glides toward the line's slot, which is
     // what pushes the older lines down when a new one lands on top.
     struct LogLine {
@@ -143,6 +153,20 @@ private:
     QTimer*             logTick_ = nullptr;
     QElapsedTimer       logClock_;
     qint64              logLastMs_ = 0;
+
+    // `fade` runs 0..1 toward 1 while the pair is current and back to 0 once
+    // it is not; the entry is dropped at 0. Its own timer for the same reason
+    // as the log's, and it also carries the marching dashes, so it runs for as
+    // long as a collision is on screen and not a frame longer.
+    struct ConflictView {
+        ConflictEdge edge;
+        qreal        fade = 0;
+        bool         live = true;
+    };
+    std::unordered_map<std::string, ConflictView> conflicts_;
+    QTimer*                                      conflictTick_ = nullptr;
+    QElapsedTimer                                conflictClock_;
+    qint64                                       conflictLastMs_ = 0;
 };
 
 } // namespace cx::gui
